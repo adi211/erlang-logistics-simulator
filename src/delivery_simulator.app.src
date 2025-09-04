@@ -1,0 +1,8 @@
+{application, delivery_simulator,
+ [{description, "Logistics Simulator"},
+  {vsn, "1.0.0"},
+  {registered, []},
+  {applications, [kernel, stdlib, wx]},
+  {env,[]},
+  {modules, []}
+ ]}.

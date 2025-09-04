@@ -1,0 +1,10 @@
+{application,delivery_simulator,
+             [{description,"Logistics Simulator"},
+              {vsn,"1.0.0"},
+              {registered,[]},
+              {applications,[kernel,stdlib,wx]},
+              {env,[]},
+              {modules,[control_center,dashboard_server,
+                        delivery_simulator_app,delivery_simulator_sup,
+                        map_visual,map_visual_tb,stress_log,test_system,
+                        visualization_server,zone_manager]}]}.

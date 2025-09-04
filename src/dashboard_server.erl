@@ -1,5 +1,6 @@
 %%%-------------------------------------------------------------------
-%%% @doc Working Dashboard - All features, no wx errors
+%%% @doc Dashboard Server - Control panel with map selection
+%%% Fixed to pass map file name to visualization on START
 %%%-------------------------------------------------------------------
 -module(dashboard_server).
 -behaviour(wx_object).
@@ -21,16 +22,14 @@
     deploy_btn,
     remove_btn,
     courier_input,
-    mode_choice,
-    household_text,  % Changed to text control
+    map_choice,
     load_slider,
     % Display
     stats_labels,
     zones_list,
     % State
     simulation_state = stopped,
-    simulation_mode = visual,
-    households = 1000,
+    current_map = map_data_100,  % Default map as atom
     % Stats
     total_zones = 0,
     total_couriers = 0,
@@ -75,7 +74,7 @@ init([Wx]) ->
     ControlBox = wxStaticBox:new(Panel, ?wxID_ANY, "Simulation Control"),
     ControlSizer = wxStaticBoxSizer:new(ControlBox, ?wxVERTICAL),
     
-    %% Row 1: Main buttons and mode
+    %% Row 1: Main buttons and map selection
     Row1 = wxBoxSizer:new(?wxHORIZONTAL),
     
     StartBtn = wxButton:new(Panel, 1001, [{label, "START"}, {size, {100, 35}}]),
@@ -91,34 +90,30 @@ init([Wx]) ->
     wxSizer:add(Row1, StopBtn, [{flag, ?wxALL}, {border, 5}]),
     wxSizer:addStretchSpacer(Row1),
     
-    %% Mode selection
-    wxSizer:add(Row1, wxStaticText:new(Panel, ?wxID_ANY, "Mode: "), 
+    %% Map selection
+    wxSizer:add(Row1, wxStaticText:new(Panel, ?wxID_ANY, "Map: "), 
                 [{flag, ?wxALL bor ?wxALIGN_CENTER_VERTICAL}, {border, 5}]),
     
-    ModeChoice = wxChoice:new(Panel, 1010, [{choices, ["Visual (100 houses)", "Stress Test"]}, 
-                                            {size, {150, -1}}]),
-    wxChoice:setSelection(ModeChoice, 0),
-    wxChoice:connect(ModeChoice, command_choice_selected),
-    wxSizer:add(Row1, ModeChoice, [{flag, ?wxALL}, {border, 5}]),
+    MapChoice = wxChoice:new(Panel, 1010, [
+        {choices, ["Small (100 homes)", "Large (200 homes)"]}, 
+        {size, {150, -1}}
+    ]),
+    wxChoice:setSelection(MapChoice, 0),  % Default to small map
+    wxChoice:connect(MapChoice, command_choice_selected),
+    wxSizer:add(Row1, MapChoice, [{flag, ?wxALL}, {border, 5}]),
     
     wxSizer:add(ControlSizer, Row1, [{flag, ?wxEXPAND}]),
     
-    %% Row 2: Stress mode settings
+    %% Row 2: Simulation info
     Row2 = wxBoxSizer:new(?wxHORIZONTAL),
     
-    HouseholdLabel = wxStaticText:new(Panel, ?wxID_ANY, "Households (Stress mode): "),
-    HouseholdText = wxTextCtrl:new(Panel, 1012, [{value, "1000"}, {size, {80, -1}}]),
-    wxTextCtrl:enable(HouseholdText, [{enable, false}]),
+    InfoLabel = wxStaticText:new(Panel, ?wxID_ANY, 
+                                 "Distributed simulation with 3 zones: North, Center, South"),
+    InfoFont = wxFont:new(10, ?wxFONTFAMILY_DEFAULT, ?wxFONTSTYLE_ITALIC, ?wxFONTWEIGHT_NORMAL),
+    wxStaticText:setFont(InfoLabel, InfoFont),
+    wxStaticText:setForegroundColour(InfoLabel, {100, 100, 100}),
     
-    UpdateHouseholdsBtn = wxButton:new(Panel, 1013, [{label, "Set"}, {size, {60, 25}}]),
-    wxButton:connect(UpdateHouseholdsBtn, command_button_clicked),
-    wxButton:enable(UpdateHouseholdsBtn, [{enable, false}]),
-    put(update_households_btn, UpdateHouseholdsBtn),
-    
-    wxSizer:add(Row2, HouseholdLabel, [{flag, ?wxALL bor ?wxALIGN_CENTER_VERTICAL}, {border, 5}]),
-    wxSizer:add(Row2, HouseholdText, [{flag, ?wxALL}, {border, 5}]),
-    wxSizer:add(Row2, UpdateHouseholdsBtn, [{flag, ?wxALL}, {border, 5}]),
-    
+    wxSizer:add(Row2, InfoLabel, [{flag, ?wxALL bor ?wxALIGN_CENTER_VERTICAL}, {border, 10}]),
     wxSizer:add(ControlSizer, Row2, [{flag, ?wxEXPAND}]),
     
     wxSizer:add(MainSizer, ControlSizer, [{flag, ?wxEXPAND bor ?wxALL}, {border, 10}]),
@@ -181,6 +176,15 @@ init([Wx]) ->
     wxListCtrl:insertColumn(ZonesList, 2, "Couriers", [{width, 100}]),
     wxListCtrl:insertColumn(ZonesList, 3, "Deliveries", [{width, 100}]),
     
+    %% Add fixed zones
+    lists:foreach(fun({Zone, Index}) ->
+        wxListCtrl:insertItem(ZonesList, Index, ""),
+        wxListCtrl:setItem(ZonesList, Index, 0, Zone),
+        wxListCtrl:setItem(ZonesList, Index, 1, "Ready"),
+        wxListCtrl:setItem(ZonesList, Index, 2, "0"),
+        wxListCtrl:setItem(ZonesList, Index, 3, "0")
+    end, [{"North Zone", 0}, {"Center Zone", 1}, {"South Zone", 2}]),
+    
     wxSizer:add(ZonesSizer, ZonesList, [{proportion, 1}, {flag, ?wxEXPAND bor ?wxALL}, {border, 5}]),
     wxSizer:add(MainSizer, ZonesSizer, [{proportion, 1}, {flag, ?wxEXPAND bor ?wxALL}, {border, 10}]),
     
@@ -189,7 +193,7 @@ init([Wx]) ->
     
     %% Status bar
     wxFrame:createStatusBar(Frame),
-    wxFrame:setStatusText(Frame, "System: STOPPED | Mode: Visual"),
+    wxFrame:setStatusText(Frame, "System: STOPPED | Map: Small (100 homes)"),
     
     %% Show frame
     wxFrame:show(Frame),
@@ -203,13 +207,12 @@ init([Wx]) ->
         deploy_btn = DeployBtn,
         remove_btn = RemoveBtn,
         courier_input = CourierInput,
-        mode_choice = ModeChoice,
-        household_text = HouseholdText,
+        map_choice = MapChoice,
         load_slider = LoadSlider,
         stats_labels = StatsLabels,
         zones_list = ZonesList,
         simulation_state = stopped,
-        simulation_mode = visual
+        current_map = map_data_100
     }}.
 
 %%--------------------------------------------------------------------
@@ -221,7 +224,7 @@ create_stats_labels(Panel, Sizer) ->
     BoldFont = wxFont:new(10, ?wxFONTFAMILY_DEFAULT, ?wxFONTSTYLE_NORMAL, ?wxFONTWEIGHT_BOLD),
     
     Stats = [
-        {zones_label, "Zones: ", "0"},
+        {zones_label, "Zones: ", "3"},
         {couriers_label, "Couriers: ", "0"},
         {active_label, "Active: ", "0"},
         {deliveries_label, "Deliveries: ", "0"},
@@ -246,7 +249,7 @@ create_stats_labels(Panel, Sizer) ->
 %% @doc Handle events
 %%--------------------------------------------------------------------
 handle_event(#wx{id = Id, event = #wxCommand{type = command_button_clicked}}, 
-             State = #state{courier_input = CourierInput, household_text = HText}) ->
+             State = #state{courier_input = CourierInput}) ->
     NewState = case Id of
         1001 -> % Start
             handle_start(State);
@@ -271,44 +274,41 @@ handle_event(#wx{id = Id, event = #wxCommand{type = command_button_clicked}},
             gen_server:cast(control_center, {remove_couriers, Num}),
             State;
             
-        1013 -> % Update households
-            Value = wxTextCtrl:getValue(HText),
-            Num = try list_to_integer(Value) catch _:_ -> 1000 end,
-            io:format("Dashboard: Setting households to ~p~n", [Num]),
-            gen_server:cast(control_center, {update_households, Num}),
-            State#state{households = Num};
-            
         _ ->
             State
     end,
     {noreply, NewState};
 
 handle_event(#wx{id = 1010, event = #wxCommand{type = command_choice_selected}}, 
-             State = #state{mode_choice = Choice, household_text = HText, 
-                           simulation_state = stopped}) ->
+             State = #state{map_choice = Choice, simulation_state = stopped}) ->
     Selection = wxChoice:getSelection(Choice),
-    NewMode = case Selection of
-        0 -> visual;
-        1 -> stress;
-        _ -> visual
+    
+    %% Determine which map module to use
+    MapModule = case Selection of
+        0 -> map_data_100;      % Small map (100 homes)
+        1 -> map_data_200;      % Large map (200 homes)
+        _ -> map_data_100
     end,
     
-    io:format("Dashboard: Mode changed to ~p~n", [NewMode]),
+    io:format("Dashboard: Map changed to ~p~n", [MapModule]),
     
-    %% Enable/disable household controls
-    Enable = NewMode == stress,
-    wxTextCtrl:enable(HText, [{enable, Enable}]),
-    case get(update_households_btn) of
-        undefined -> ok;
-        Btn -> wxButton:enable(Btn, [{enable, Enable}])
+    %% Update status bar
+    MapLabel = case Selection of
+        0 -> "Small (100 homes)";
+        1 -> "Large (200 homes)";
+        _ -> "Unknown"
     end,
-    
-    gen_server:cast(control_center, {set_mode, NewMode}),
     
     wxFrame:setStatusText(State#state.frame, 
-                         io_lib:format("System: STOPPED | Mode: ~p", [NewMode])),
+                         io_lib:format("System: STOPPED | Map: ~s", [MapLabel])),
     
-    {noreply, State#state{simulation_mode = NewMode}};
+    {noreply, State#state{current_map = MapModule}};
+
+handle_event(#wx{id = 1010, event = #wxCommand{type = command_choice_selected}}, State) ->
+    %% Map change disabled during simulation
+    io:format("Dashboard: Cannot change map while simulation is running~n"),
+    wxChoice:setSelection(State#state.map_choice, get_map_index(State#state.current_map)),
+    {noreply, State};
 
 handle_event(#wx{id = 1011, event = #wxCommand{type = command_slider_updated}}, 
              State = #state{load_slider = Slider}) ->
@@ -332,56 +332,42 @@ handle_event(_Event, State) ->
 
 %%--------------------------------------------------------------------
 %% @private
-%% @doc Control handlers
+%% @doc Control handlers - FIXED TO PASS MAP FILE
 %%--------------------------------------------------------------------
-handle_start(State = #state{simulation_mode = Mode, households = Households}) ->
-    io:format("Dashboard: Starting simulation in ~p mode~n", [Mode]),
+handle_start(State = #state{current_map = MapModule}) ->
+    io:format("Dashboard: Starting simulation with map ~p~n", [MapModule]),
     
-    %% Send households count if in stress mode
-    case Mode of
-        stress ->
-            gen_server:cast(control_center, {update_households, Households});
-        _ -> ok
-    end,
+    %% Tell control to start with the specific map
+    gen_server:cast(control_center, {start_simulation, MapModule}),
     
-    %% ONLY tell control to start - it will tell visualization what to do
-    gen_server:cast(control_center, {start_simulation}),
+    %% Disable map selection during simulation
+    wxChoice:enable(State#state.map_choice, [{enable, false}]),
     
-    %% Update UI state
-    wxChoice:enable(State#state.mode_choice, [{enable, false}]),
-    wxTextCtrl:enable(State#state.household_text, [{enable, false}]),
-    case get(update_households_btn) of
-        undefined -> ok;
-        Btn -> wxButton:enable(Btn, [{enable, false}])
-    end,
-    
+    MapLabel = get_map_label(MapModule),
     wxFrame:setStatusText(State#state.frame, 
-                         io_lib:format("System: RUNNING | Mode: ~p", [Mode])),
+                         io_lib:format("System: RUNNING | Map: ~s", [MapLabel])),
     
     State#state{simulation_state = running}.
 
 handle_pause(State) ->
     io:format("Dashboard: Pausing simulation~n"),
     gen_server:cast(control_center, {pause_simulation}),
+    
+    MapLabel = get_map_label(State#state.current_map),
     wxFrame:setStatusText(State#state.frame, 
-                         io_lib:format("System: PAUSED | Mode: ~p", [State#state.simulation_mode])),
+                         io_lib:format("System: PAUSED | Map: ~s", [MapLabel])),
     State#state{simulation_state = paused}.
 
-handle_stop(State = #state{simulation_mode = Mode}) ->
+handle_stop(State) ->
     io:format("Dashboard: Stopping simulation~n"),
     gen_server:cast(control_center, {stop_simulation}),
     
-    wxChoice:enable(State#state.mode_choice, [{enable, true}]),
+    %% Re-enable map selection
+    wxChoice:enable(State#state.map_choice, [{enable, true}]),
     
-    Enable = Mode == stress,
-    wxTextCtrl:enable(State#state.household_text, [{enable, Enable}]),
-    case get(update_households_btn) of
-        undefined -> ok;
-        Btn -> wxButton:enable(Btn, [{enable, Enable}])
-    end,
-    
+    MapLabel = get_map_label(State#state.current_map),
     wxFrame:setStatusText(State#state.frame, 
-                         io_lib:format("System: STOPPED | Mode: ~p", [Mode])),
+                         io_lib:format("System: STOPPED | Map: ~s", [MapLabel])),
     State#state{simulation_state = stopped}.
 
 %%--------------------------------------------------------------------
@@ -410,20 +396,10 @@ handle_cast({update_zone_status, Zone, Status, Couriers, Deliveries},
     {noreply, State};
 
 handle_cast({update_nodes, Control, Viz}, State = #state{zones_list = List}) ->
-    wxListCtrl:insertItem(List, 0, ""),
-    wxListCtrl:setItem(List, 0, 0, atom_to_list(Control)),
-    wxListCtrl:setItem(List, 0, 1, "Control"),
-    wxListCtrl:setItemTextColour(List, 0, {0, 100, 200}),
-    
-    case Viz of
-        [] -> ok;
-        Node ->
-            wxListCtrl:insertItem(List, 1, ""),
-            wxListCtrl:setItem(List, 1, 0, atom_to_list(Node)),
-            wxListCtrl:setItem(List, 1, 1, "Visual"),
-            wxListCtrl:setItemTextColour(List, 1, {0, 150, 100})
-    end,
-    
+    %% Update the visualization node info
+    wxListCtrl:setItem(List, 0, 1, "Connected"),
+    wxListCtrl:setItem(List, 1, 1, "Connected"),
+    wxListCtrl:setItem(List, 2, 1, "Connected"),
     {noreply, State};
 
 handle_cast(_Msg, State) ->
@@ -455,35 +431,50 @@ update_label(Labels, Tag, Value) ->
     end.
 
 update_zone_in_list(List, Zone, Status, Couriers, Deliveries) ->
-    Count = wxListCtrl:getItemCount(List),
-    Index = find_or_add_zone(List, Zone, 0, Count),
-    
-    wxListCtrl:setItem(List, Index, 0, atom_to_list(Zone)),
-    
-    StatusText = case Status of
-        live -> "Live";
-        down -> "Down";
-        _ -> atom_to_list(Status)
+    %% Find zone index based on zone name
+    Index = case Zone of
+        north -> 0;
+        center -> 1;
+        south -> 2;
+        _ -> -1
     end,
     
-    wxListCtrl:setItem(List, Index, 1, StatusText),
-    wxListCtrl:setItem(List, Index, 2, integer_to_list(Couriers)),
-    wxListCtrl:setItem(List, Index, 3, integer_to_list(Deliveries)).
-
-find_or_add_zone(List, _Zone, Current, Max) when Current >= Max ->
-    wxListCtrl:insertItem(List, Max, ""),
-    Max;
-find_or_add_zone(List, Zone, Current, Max) ->
-    Item = wxListCtrl:getItemText(List, Current, [{col, 0}]),
-    case Item of
-        "" -> find_or_add_zone(List, Zone, Current + 1, Max);
+    case Index of
+        -1 -> ok;
         _ ->
-            try 
-                case list_to_atom(Item) of
-                    Zone -> Current;
-                    _ -> find_or_add_zone(List, Zone, Current + 1, Max)
-                end
-            catch
-                _:_ -> find_or_add_zone(List, Zone, Current + 1, Max)
-            end
+            ZoneName = case Zone of
+                north -> "North Zone";
+                center -> "Center Zone";
+                south -> "South Zone"
+            end,
+            
+            StatusText = case Status of
+                live -> "Active";
+                down -> "Down";
+                ready -> "Ready";
+                _ -> atom_to_list(Status)
+            end,
+            
+            wxListCtrl:setItem(List, Index, 0, ZoneName),
+            wxListCtrl:setItem(List, Index, 1, StatusText),
+            wxListCtrl:setItem(List, Index, 2, integer_to_list(Couriers)),
+            wxListCtrl:setItem(List, Index, 3, integer_to_list(Deliveries)),
+            
+            %% Set color based on status
+            Color = case Status of
+                live -> {0, 150, 0};
+                down -> {200, 0, 0};
+                ready -> {100, 100, 100};
+                _ -> {0, 0, 0}
+            end,
+            wxListCtrl:setItemTextColour(List, Index, Color)
     end.
+
+%% Helper functions for map management
+get_map_label(map_data_100) -> "Small (100 homes)";
+get_map_label(map_data_200) -> "Large (200 homes)";
+get_map_label(_) -> "Custom".
+
+get_map_index(map_data_100) -> 0;
+get_map_index(map_data_200) -> 1;
+get_map_index(_) -> 0.

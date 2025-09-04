@@ -1,5 +1,5 @@
 %%%-------------------------------------------------------------------
-%%% @doc Control Center - Clean working version
+%%% @doc Control Center - Fixed to pass map name to visualization
 %%%-------------------------------------------------------------------
 -module(control_center).
 -behaviour(gen_server).
@@ -21,7 +21,8 @@
     total_deliveries = 0,
     failed_deliveries = 0,
     simulation_state = stopped,
-    simulation_mode = visual
+    simulation_mode = visual,
+    current_map = map_data_100  % Track current map
 }).
 
 %%--------------------------------------------------------------------
@@ -76,7 +77,8 @@ init([VisualizationNode]) ->
         dashboard_pid = DashboardPID,
         visualization_node = VisualizationNode,
         simulation_state = stopped,
-        simulation_mode = visual
+        simulation_mode = visual,
+        current_map = map_data_100
     }}.
 
 %%--------------------------------------------------------------------
@@ -108,18 +110,30 @@ handle_call(_Request, _From, State) ->
 %% @private
 %% @doc Handling cast messages
 %%--------------------------------------------------------------------
-handle_cast({start_simulation}, State) ->
-    io:format("Control Center: Starting simulation in ~p mode~n", [State#state.simulation_mode]),
+
+%% Handle start with map specification
+handle_cast({start_simulation, MapModule}, State) when is_atom(MapModule) ->
+    io:format("Control Center: Starting simulation with map ~p~n", [MapModule]),
     
     %% Send to zones
     broadcast_to_zones(State#state.zones, {start_simulation}),
     
-    %% Send to visualization - THIS IS THE IMPORTANT PART!
-    io:format("Control Center: Telling visualization to start ~p mode~n", [State#state.simulation_mode]),
+    %% First tell visualization to start
     gen_server:cast({visualization_server, State#state.visualization_node}, 
-                    {start_visualization, State#state.simulation_mode}),
+                    {start_visualization}),
     
-    {noreply, State#state{simulation_state = running}};
+    %% Then load the specific map
+    gen_server:cast({visualization_server, State#state.visualization_node}, 
+                    {load_map, MapModule}),
+    
+    {noreply, State#state{
+        simulation_state = running,
+        current_map = MapModule
+    }};
+
+%% Handle start without map (backwards compatibility)
+handle_cast({start_simulation}, State) ->
+    handle_cast({start_simulation, State#state.current_map}, State);
 
 handle_cast({pause_simulation}, State) ->
     io:format("Control Center: Pausing simulation~n"),
@@ -139,8 +153,7 @@ handle_cast({stop_simulation}, State) ->
     %% Send to zones
     broadcast_to_zones(State#state.zones, {stop_simulation}),
     
-    %% Send to visualization - this will close the window
-    io:format("Control Center: Telling visualization to stop~n"),
+    %% Send to visualization
     gen_server:cast({visualization_server, State#state.visualization_node}, 
                     {stop_visualization}),
     
@@ -153,6 +166,11 @@ handle_cast({set_mode, Mode}, State) when State#state.simulation_state == stoppe
 handle_cast({deploy_couriers, Num}, State) ->
     io:format("Control Center: Deploying ~p couriers~n", [Num]),
     broadcast_to_zones(State#state.zones, {deploy_couriers, Num}),
+    {noreply, State};
+
+handle_cast({remove_couriers, Num}, State) ->
+    io:format("Control Center: Removing ~p couriers~n", [Num]),
+    broadcast_to_zones(State#state.zones, {remove_couriers, Num}),
     {noreply, State};
 
 handle_cast({update_load_factor, Value}, State) ->

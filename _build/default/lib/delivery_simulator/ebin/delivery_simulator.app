@@ -6,5 +6,5 @@
               {env,[]},
               {modules,[control_center,dashboard_server,
                         delivery_simulator_app,delivery_simulator_sup,
-                        map_visual,map_visual_tb,stress_log,test_system,
-                        visualization_server,zone_manager]}]}.
+                        map_data_100,map_data_200,visualization_server,
+                        zone_manager]}]}.

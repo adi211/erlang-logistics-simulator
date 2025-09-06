@@ -4,7 +4,8 @@
               {registered,[]},
               {applications,[kernel,stdlib,wx]},
               {env,[]},
-              {modules,[control_center,dashboard_server,
+              {modules,[backup_node,control_center,dashboard_server,
                         delivery_simulator_app,delivery_simulator_sup,
-                        map_data_100,map_data_200,visualization_server,
+                        household,logistics_state_collector,map_data_100,
+                        map_data_200,map_server,package,visualization_server,
                         zone_manager]}]}.

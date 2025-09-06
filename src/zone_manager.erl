@@ -1,29 +1,33 @@
 %%%-------------------------------------------------------------------
-%%% Zone Manager - Sends visualization updates to visualization node
+%%% Zone Manager - Working with zone_manager:start(ControlNode)
 %%%-------------------------------------------------------------------
 -module(zone_manager).
--behaviour(gen_server).
+-behaviour(gen_statem).
 
 -include("header.hrl").
+-include("map_records.hrl").
 
--export([start/1]).
--export([init/1, handle_call/3, handle_cast/2, handle_info/2, terminate/2, code_change/3]).
+%% API - Only export start/1
+-export([start/1, new_package/2]).
 
--define(SERVER, ?MODULE).
+%% gen_statem callbacks
+-export([callback_mode/0, init/1, handle_event/4, terminate/3, code_change/4]).
+
 -record(state, {
-    control_center_pid,   
-    visualization_node,    % Node running visualization
-    total_couriers,       
-    total_deliveries,     
-    failed_deliveries,    
-    zone_id,             
-    order_queue,         
-    courier_pool,
-    households,
-    packages,
-    simulation_running,
-    zone_center,         
-    zone_bounds          
+    control_node,
+    visualization_node = 'visualization@127.0.0.1',
+    zone_id,
+    zone_center,
+    zone_bounds,
+    zone,
+    waiting_packages = [],
+    active_deliveries = 0,
+    total_deliveries = 0,
+    failed_deliveries = 0,
+    total_orders = 0,
+    household_pids = [],
+    simulation_running = false,
+    package_order_counts = #{}
 }).
 
 %% Define zone configurations
@@ -33,19 +37,32 @@
     zone_south => #{center => {50, 80}, bounds => {0, 67, 100, 100}}
 }).
 
+%%====================================================================
+%% API
+%%====================================================================
+
 start(ControlNode) ->
-    gen_server:start_link({local, ?SERVER}, ?MODULE, [ControlNode], []).
+    gen_statem:start_link({local, zone_manager}, ?MODULE, [ControlNode], []).
+
+new_package(Zone, PackageId) ->
+    io:format("API: Sending new_package ~p to zone ~p~n", [PackageId, Zone]),
+    gen_statem:cast(zone_manager, {new_package, PackageId}).
+
+%%====================================================================
+%% gen_statem callbacks
+%%====================================================================
+
+callback_mode() -> handle_event_function.
 
 init([ControlNode]) ->
-    io:format("Zone Manager ~p: Starting up...~n", [node()]),
-    put(server, {control_center, ControlNode}),
+    io:format("Zone Manager ~p: Starting up as FSM with control node ~p...~n", [node(), ControlNode]),
     
     %% Determine zone configuration based on node name
-    ZoneName = case atom_to_list(node()) of
-        "zone_north" ++ _ -> zone_north;
-        "zone_center" ++ _ -> zone_center;
-        "zone_south" ++ _ -> zone_south;
-        _ -> zone_north  % default
+    {ZoneName, ZoneAtom} = case atom_to_list(node()) of
+        "zone_north" ++ _ -> {zone_north, north};
+        "zone_center" ++ _ -> {zone_center, center};
+        "zone_south" ++ _ -> {zone_south, south};
+        _ -> {zone_north, north}
     end,
     
     #{center := ZoneCenter, bounds := ZoneBounds} = maps:get(ZoneName, ?ZONE_CONFIG),
@@ -55,287 +72,414 @@ init([ControlNode]) ->
     
     %% Initialize ETS for zone statistics
     case ets:info(zone_stats) of
-		undefined -> ets:new(zone_stats, [set, named_table, public, {read_concurrency, true}, {write_concurrency, true}]);
-		_ -> ok
-	end,
+        undefined -> ets:new(zone_stats, [set, named_table, public, 
+                                          {read_concurrency, true}, 
+                                          {write_concurrency, true}]);
+        _ -> ok
+    end,
     ets:insert(zone_stats, {deliveries, 0}),
     ets:insert(zone_stats, {failures, 0}),
     ets:insert(zone_stats, {couriers_active, 0}),
     ets:insert(zone_stats, {update_stats, false}),
     
-    %% Start timer for periodic stats updates
-    spawn_link(fun() -> update_control_center_timer({zone_manager, node()}) end),
-    
     %% Connect to control center
-    gen_server:call(get(server), {connect, node()}),
+    io:format("Zone Manager ~p: Connecting to control center at ~p~n", [node(), ControlNode]),
+    case gen_server:call({control_center, ControlNode}, {connect, node()}) of
+        ok ->
+            io:format("Zone Manager ~p: Successfully connected to control center~n", [node()]);
+        Error ->
+            io:format("Zone Manager ~p: Failed to connect to control center: ~p~n", [node(), Error])
+    end,
     
-    %% Set visualization node (hardcoded for now, could be passed in)
-    VisualizationNode = 'visualization@127.0.0.1',
-    
-    {ok, #state{
-        control_center_pid = ControlNode,
-        visualization_node = VisualizationNode,
-        total_couriers = 0,
+    %% Create initial state record
+    InitialState = #state{
+        control_node = ControlNode,
+        visualization_node = 'visualization@127.0.0.1',
+        zone_id = node(),
+        zone_center = ZoneCenter,
+        zone_bounds = ZoneBounds,
+        zone = atom_to_list(ZoneAtom),
+        waiting_packages = [],
+        active_deliveries = 0,
         total_deliveries = 0,
         failed_deliveries = 0,
-        zone_id = node(),
-        order_queue = [],
-        courier_pool = [],
-        households = [],
-        packages = [],
+        total_orders = 0,
+        household_pids = [],
         simulation_running = false,
-        zone_center = ZoneCenter,
-        zone_bounds = ZoneBounds
-    }}.
-
-handle_call({become_control_center, VisualizationNode}, _From, State) ->
-    io:format("Zone Manager ~p: Becoming control center~n", [node()]),
-    NewControlPID = spawn(control_center, start, [VisualizationNode]),
-    gen_server:cast({zone_manager, node()}, {kill_zone_manager}),
-    {reply, NewControlPID, State};
-
-handle_call(_Request, _From, State) ->
-    {reply, ok, State}.
-
-handle_cast({start_simulation}, State) ->
-    io:format("Zone Manager ~p: Starting simulation~n", [node()]),
-    Households = start_households(?DEFAULT_HOUSEHOLD_COUNT, State#state.zone_bounds),
-    {noreply, State#state{simulation_running = true, households = Households}};
-
-handle_cast({deploy_couriers, Num}, State = #state{total_couriers = TotalCouriers, 
-                                                    zone_center = ZoneCenter,
-                                                    visualization_node = VizNode}) ->
-    io:format("Zone Manager ~p: Deploying ~p couriers~n", [node(), Num]),
-    ets:update_counter(zone_stats, couriers_active, Num),
-    gen_server:cast(get(server), {update_stats, node(), Num, 0, 0}),
-    
-    %% Create courier processes starting from zone distribution center
-    NewCouriers = create_couriers(Num, ZoneCenter, State#state.zone_id),
-    
-    %% Send courier positions to visualization node
-    lists:foreach(fun({CourierID, _PID}) ->
-        send_to_visualization(VizNode, {update_courier_position, CourierID, ZoneCenter})
-    end, NewCouriers),
-    
-    {noreply, State#state{
-        total_couriers = TotalCouriers + Num,
-        courier_pool = State#state.courier_pool ++ NewCouriers
-    }};
-
-handle_cast({order_placed, OrderInfo}, State = #state{order_queue = Queue, packages = Packages, 
-                                                       zone_bounds = Bounds,
-                                                       visualization_node = VizNode}) ->
-    io:format("Zone Manager ~p: New order received~n", [node()]),
-    
-    %% Generate locations within zone bounds
-    {MinX, MinY, MaxX, MaxY} = Bounds,
-    BusinessLoc = {MinX + rand:uniform() * (MaxX - MinX), MinY + rand:uniform() * (MaxY - MinY)},
-    CustomerLoc = {MinX + rand:uniform() * (MaxX - MinX), MinY + rand:uniform() * (MaxY - MinY)},
-    
-    %% Update order with zone-specific locations
-    UpdatedOrderInfo = OrderInfo#{
-        business_location => BusinessLoc,
-        customer_location => CustomerLoc
+        package_order_counts = #{}
     },
     
-    %% Send order to visualization node
-    OrderID = maps:get(id, UpdatedOrderInfo),
-    send_to_visualization(VizNode, {add_order, OrderID, BusinessLoc, CustomerLoc}),
+    %% Report initial zone state
+    report_zone_state(atom_to_list(ZoneAtom), InitialState),
     
-    %% Create package process
-    PackagePID = spawn(fun() -> package_process(UpdatedOrderInfo) end),
-    NewQueue = Queue ++ [UpdatedOrderInfo],
+    {ok, monitoring, InitialState}.
+
+%%====================================================================
+%% State Machine Event Handlers
+%%====================================================================
+
+%% Handle retry of state reporting
+handle_event(info, {retry_report_state, Zone, Data}, StateName, CurrentState) ->
+    report_zone_state(Zone, Data),
+    {keep_state, CurrentState};
+
+handle_event(info, {retry_report_state_with_households, Zone, Data}, StateName, CurrentState) ->
+    report_zone_state_with_households(Zone, Data),
+    {keep_state, CurrentState};
+
+%% Start simulation - create households
+handle_event(cast, {start_simulation}, _StateName, Data) ->
+    io:format("Zone Manager ~p: Starting simulation and creating households~n", [Data#state.zone_id]),
     
-    %% Try to assign to available courier
-    {UpdatedQueue, UpdatedCouriers} = try_assign_orders(NewQueue, State#state.courier_pool),
+    %% Get all locations from map_server via RPC to control node
+    HousesInZone = try
+        case rpc:call(Data#state.control_node, map_server, get_all_locations, []) of
+            {ok, Locs} ->
+                %% Filter for houses in our zone
+                ZoneAtom = list_to_atom(Data#state.zone),
+                lists:filter(fun
+                    (#location{type = home, zone = LocZone}) ->
+                        LocZone == ZoneAtom;
+                    (_) -> false
+                end, Locs);
+            {badrpc, RPCReason} ->
+                io:format("Zone Manager: RPC failed to get locations: ~p~n", [RPCReason]),
+                [];
+            ErrorResult ->
+                io:format("Zone Manager: Failed to get locations: ~p~n", [ErrorResult]),
+                []
+        end
+    catch
+        Type:CatchReason ->
+            io:format("Zone Manager: Error getting locations - ~p:~p~n", [Type, CatchReason]),
+            []
+    end,
     
-    {noreply, State#state{
-        order_queue = UpdatedQueue, 
-        packages = Packages ++ [PackagePID],
-        courier_pool = UpdatedCouriers
+    %% If no houses found, create some defaults
+    FinalHouses = case HousesInZone of
+        [] ->
+            io:format("Zone Manager: No houses found, creating defaults~n"),
+            ZoneStr = Data#state.zone,
+            lists:map(fun(N) ->
+                #location{
+                    id = "household_" ++ ZoneStr ++ "_" ++ integer_to_list(N),
+                    type = home,
+                    zone = list_to_atom(ZoneStr),
+                    x = 50 + N * 10,
+                    y = 50
+                }
+            end, lists:seq(1, 3));
+        Houses ->
+            Houses
+    end,
+    
+    io:format("Zone Manager ~p: Creating households for ~p houses in zone ~p~n", 
+              [Data#state.zone_id, length(FinalHouses), Data#state.zone]),
+    
+    %% Start household processes for each house
+    HouseholdPids = lists:map(fun(House) ->
+        HouseholdId = House#location.id,
+        
+        case household:start_link(HouseholdId, Data#state.zone, self()) of
+            {ok, Pid} ->
+                io:format("Zone Manager: Started household ~p (PID: ~p)~n", [HouseholdId, Pid]),
+                {HouseholdId, Pid};
+            Error ->
+                io:format("Zone Manager: Failed to start household ~p: ~p~n", [HouseholdId, Error]),
+                {HouseholdId, undefined}
+        end
+    end, FinalHouses),
+    
+    %% Filter out failed starts
+    ValidHouseholds = [{Id, Pid} || {Id, Pid} <- HouseholdPids, Pid =/= undefined],
+    
+    io:format("Zone Manager ~p: Successfully started ~p households~n", 
+              [Data#state.zone_id, length(ValidHouseholds)]),
+    
+    %% Initialize package order counts
+    InitialCounts = lists:foldl(fun({Id, _Pid}, Acc) ->
+        maps:put(Id, 0, Acc)
+    end, #{}, ValidHouseholds),
+    
+    {next_state, monitoring, Data#state{
+        simulation_running = true,
+        household_pids = ValidHouseholds,
+        package_order_counts = InitialCounts
     }};
 
-handle_cast({courier_position_update, CourierID, Position}, State = #state{visualization_node = VizNode}) ->
-    %% Forward position update to visualization node
-    send_to_visualization(VizNode, {update_courier_position, CourierID, Position}),
-    {noreply, State};
+%% Handle new package from household
+handle_event(info, {new_package, _HouseholdPid, HouseholdId, PackageId}, monitoring, Data) ->
+    handle_new_household_package(HouseholdId, PackageId, Data);
 
-handle_cast({delivery_complete, CourierID, OrderID}, State = #state{visualization_node = VizNode}) ->
-    %% Remove order from visualization
-    send_to_visualization(VizNode, {remove_order, OrderID}),
-    ets:update_counter(zone_stats, deliveries, 1),
-    ets:insert(zone_stats, {update_stats, true}),
-    {noreply, State};
+handle_event(cast, {new_package, _HouseholdPid, HouseholdId, PackageId}, monitoring, Data) ->
+    handle_new_household_package(HouseholdId, PackageId, Data);
 
-handle_cast({delivery_complete, CourierID}, State) ->
-    ets:update_counter(zone_stats, deliveries, 1),
-    ets:insert(zone_stats, {update_stats, true}),
-    {noreply, State};
+%% Handle new package (partner's version logic)
+handle_event(cast, {new_package, PackageId}, monitoring, Data) ->
+    Zone = Data#state.zone,
+    io:format("Zone(~p) received new package: ~p~n", [Zone, PackageId]),
+    
+    %% Update total orders
+    TotalOrders = Data#state.total_orders + 1,
+    DataWithTotal = Data#state{total_orders = TotalOrders},
+    
+    %% Start package process via RPC to control node
+    case rpc:call(Data#state.control_node, package, start_link, [PackageId, Zone]) of
+        {ok, _} ->
+            io:format("Zone(~p): Package ~p process started on control node~n", [Zone, PackageId]);
+        {badrpc, Reason} ->
+            io:format("Zone(~p): Failed to start package ~p via RPC: ~p~n", [Zone, PackageId, Reason]);
+        Error ->
+            io:format("Zone(~p): Failed to start package ~p: ~p~n", [Zone, PackageId, Error])
+    end,
+    
+    %% Add to waiting packages queue
+    Waiting = DataWithTotal#state.waiting_packages,
+    NewData = DataWithTotal#state{waiting_packages = Waiting ++ [PackageId]},
+    report_zone_state(Zone, NewData),
+    {keep_state, NewData};
 
-handle_cast({pause_simulation}, State) ->
-    io:format("Zone Manager ~p: Pausing simulation~n", [node()]),
-    broadcast_to_processes(State#state.households, pause),
-    lists:foreach(fun({_ID, PID}) -> PID ! pause end, State#state.courier_pool),
-    {noreply, State#state{simulation_running = false}};
-
-handle_cast({stop_simulation}, State) ->
-    io:format("Zone Manager ~p: Stopping simulation~n", [node()]),
-    broadcast_to_processes(State#state.households, stop),
-    lists:foreach(fun({_ID, PID}) -> PID ! stop end, State#state.courier_pool),
-    {noreply, State#state{simulation_running = false, households = [], courier_pool = []}};
-
-handle_cast({update_stats}, State = #state{total_deliveries = TotalDeliveries, 
-                                           failed_deliveries = TotalFailures}) ->
-    case ets:lookup(zone_stats, update_stats) of
-        [{_, true}] ->
-            ets:insert(zone_stats, {update_stats, false}),
-            
-            [{_, Deliveries}] = ets:lookup(zone_stats, deliveries),
-            [{_, Failures}] = ets:lookup(zone_stats, failures),
-            
-            ets:update_counter(zone_stats, deliveries, -Deliveries),
-            ets:update_counter(zone_stats, failures, -Failures),
-            
-            gen_server:cast(get(server), {update_stats, node(), 0, Deliveries, Failures}),
-            
-            NewTotalDeliveries = TotalDeliveries + Deliveries,
-            NewTotalFailures = TotalFailures + Failures,
-            io:format("Zone Manager ~p: Stats update - Deliveries: ~p, Failures: ~p~n", 
-                     [node(), NewTotalDeliveries, NewTotalFailures]),
-            
-            {noreply, State#state{
-                total_deliveries = NewTotalDeliveries, 
-                failed_deliveries = NewTotalFailures
-            }};
-        [{_, false}] ->
-            {noreply, State}
+%% Handle courier assignment from pool
+handle_event(cast, {assign_to_waiting_package, CourierId}, monitoring, Data) ->
+    Zone = Data#state.zone,
+    Waiting = Data#state.waiting_packages,
+    case Waiting of
+        [Pkg | RestPkgs] ->
+            io:format("Zone(~p): Got courier ~p for waiting package ~p~n", [Zone, CourierId, Pkg]),
+            %% Assign courier via RPC
+            rpc:call(Data#state.control_node, package, assign_courier, [Pkg, CourierId]),
+            ActiveDeliveries = Data#state.active_deliveries,
+            NewData = Data#state{
+                waiting_packages = RestPkgs,
+                active_deliveries = ActiveDeliveries + 1
+            },
+            report_zone_state(Zone, NewData),
+            {keep_state, NewData};
+        [] ->
+            io:format("Zone(~p): Got assignment ~p but have no waiting packages~n", [Zone, CourierId]),
+            {keep_state, Data}
     end;
 
-handle_cast({update_param, Param, Value}, State) ->
-    io:format("Zone Manager ~p: Updating parameter ~p to ~p~n", [node(), Param, Value]),
-    broadcast_to_processes(State#state.households, {update_param, Param, Value}),
-    lists:foreach(fun({_ID, PID}) -> PID ! {update_param, Param, Value} end, State#state.courier_pool),
-    {noreply, State};
+%% Handle delivery complete
+handle_event(cast, {package_delivered, PackageId, CourierId}, monitoring, Data) ->
+    Zone = Data#state.zone,
+    io:format("Zone(~p): Package ~p delivered by courier ~p!~n", [Zone, PackageId, CourierId]),
+    Total = Data#state.total_deliveries,
+    ActiveDeliveries = Data#state.active_deliveries,
+    
+    %% Update household package count if applicable
+    UpdatedCounts = case string:tokens(PackageId, "_") of
+        [_Zone, HouseholdId | _] ->
+            CurrentCount = maps:get(HouseholdId, Data#state.package_order_counts, 1),
+            maps:put(HouseholdId, max(0, CurrentCount - 1), Data#state.package_order_counts);
+        _ ->
+            Data#state.package_order_counts
+    end,
+    
+    NewData = Data#state{
+        total_deliveries = Total + 1,
+        active_deliveries = max(0, ActiveDeliveries - 1),
+        package_order_counts = UpdatedCounts
+    },
+    report_zone_state(Zone, NewData),
+    {keep_state, NewData};
 
-handle_cast({update_control_node, ControlNode}, State) ->
-    io:format("Zone Manager ~p: Updating control node to ~p~n", [node(), ControlNode]),
-    put(server, {control_center, ControlNode}),
-    {noreply, State#state{control_center_pid = ControlNode}};
+%% Handle assignment failure
+handle_event(cast, {assignment_failed, PackageId, CourierId}, monitoring, Data) ->
+    Zone = Data#state.zone,
+    ExpectedPrefix = Zone ++ "_",
+    case string:prefix(PackageId, ExpectedPrefix) of
+        nomatch ->
+            io:format("Zone(~p): Ignoring assignment failure for package ~p (different zone)~n", [Zone, PackageId]),
+            {keep_state, Data};
+        _ ->
+            io:format("Zone(~p): Assignment failed - courier ~p busy, requeueing package ~p~n", [Zone, CourierId, PackageId]),
+            Waiting = Data#state.waiting_packages,
+            Failed = Data#state.failed_deliveries,
+            ActiveDeliveries = Data#state.active_deliveries,
+            NewData = Data#state{
+                waiting_packages = Waiting ++ [PackageId],
+                failed_deliveries = Failed + 1,
+                active_deliveries = max(0, ActiveDeliveries - 1)
+            },
+            report_zone_state(Zone, NewData),
+            {keep_state, NewData}
+    end;
 
-handle_cast({kill_zone_manager}, State) ->
-    io:format("Zone Manager ~p: Shutting down~n", [node()]),
-    exit(self(), exit),
-    {noreply, State};
+%% Handle load factor update
+handle_event(cast, {update_load_factor, Value}, _StateName, Data) ->
+    io:format("Zone Manager ~p: Received load factor update: ~p%~n", [Data#state.zone_id, Value]),
+    
+    %% Forward load factor update to all households
+    lists:foreach(fun({_Id, Pid}) ->
+        gen_server:cast(Pid, {update_load_factor, Value})
+    end, Data#state.household_pids),
+    
+    io:format("Zone Manager ~p: Updated load factor for ~p households~n", 
+              [Data#state.zone_id, length(Data#state.household_pids)]),
+    
+    {keep_state, Data};
 
-handle_cast(_Request, State) ->
-    {noreply, State}.
+%% Pause simulation
+handle_event(cast, {pause_simulation}, _StateName, Data) ->
+    io:format("Zone Manager ~p: Pausing simulation~n", [Data#state.zone_id]),
+    lists:foreach(fun({_Id, Pid}) ->
+        gen_server:cast(Pid, pause_simulation)
+    end, Data#state.household_pids),
+    {keep_state, Data#state{simulation_running = false}};
 
-handle_info(_Info, State) ->
-    {noreply, State}.
+%% Resume simulation
+handle_event(cast, {resume_simulation}, _StateName, Data) ->
+    io:format("Zone Manager ~p: Resuming simulation~n", [Data#state.zone_id]),
+    lists:foreach(fun({_Id, Pid}) ->
+        gen_server:cast(Pid, resume_simulation)
+    end, Data#state.household_pids),
+    {keep_state, Data#state{simulation_running = true}};
 
-terminate(_Reason, _State) ->
+%% Stop simulation
+handle_event(cast, {stop_simulation}, _StateName, Data) ->
+    io:format("Zone Manager ~p: Stopping simulation~n", [Data#state.zone_id]),
+    
+    %% עצור את כל ה-households אבל אל תמחק אותם
+    lists:foreach(fun({_Id, Pid}) ->
+        gen_server:cast(Pid, stop_simulation)
+    end, Data#state.household_pids),
+    
+    %% חזור ל-monitoring במקום stopped - מוכן להפעלה מחדש
+    {next_state, monitoring, Data#state{
+        simulation_running = false,
+        %% אל תאפס את household_pids! שמור אותם להפעלה מחדש
+        waiting_packages = [],
+        package_order_counts = #{}
+    }};
+
+%% State transitions
+handle_event(cast, {start_optimization}, monitoring, Data) ->
+    io:format("Zone(~p): Starting optimization cycle~n", [Data#state.zone]),
+    {next_state, optimizing, Data};
+
+handle_event(cast, {overload_detected}, monitoring, Data) ->
+    io:format("Zone(~p): Overload detected, entering emergency mode~n", [Data#state.zone]),
+    {next_state, emergency_mode, Data};
+
+handle_event(cast, {optimization_complete}, optimizing, Data) ->
+    io:format("Zone(~p): Optimization complete, returning to monitoring~n", [Data#state.zone]),
+    {next_state, monitoring, Data};
+
+handle_event(cast, {load_balanced}, emergency_mode, Data) ->
+    io:format("Zone(~p): Load balanced, returning to normal operation~n", [Data#state.zone]),
+    {next_state, monitoring, Data};
+
+handle_event(cast, {load_balance_complete}, load_balancing, Data) ->
+    io:format("Zone(~p): Load balancing complete~n", [Data#state.zone]),
+    {next_state, monitoring, Data};
+
+%% Get statistics
+handle_event({call, From}, get_stats, _StateName, Data) ->
+    WaitingPackages = Data#state.waiting_packages,
+    Stats = #{
+        zone => Data#state.zone,
+        waiting_packages => WaitingPackages,
+        waiting_count => length(WaitingPackages),
+        active_deliveries => Data#state.active_deliveries,
+        total_deliveries => Data#state.total_deliveries,
+        failed_deliveries => Data#state.failed_deliveries
+    },
+    {keep_state, Data, [{reply, From, Stats}]};
+
+%% Deploy couriers
+handle_event(cast, {deploy_couriers, Num}, _StateName, Data) ->
+    io:format("Zone Manager ~p: Deploying ~p couriers~n", [Data#state.zone_id, Num]),
+    ets:update_counter(zone_stats, couriers_active, Num),
+    {keep_state, Data};
+
+%% Catch-all handler
+handle_event(EventType, Event, StateName, Data) ->
+    io:format("Zone(~p) in state ~p received event: ~p (~p)~n", 
+              [Data#state.zone, StateName, Event, EventType]),
+    {keep_state, Data}.
+
+terminate(_Reason, _State, Data) ->
+    io:format("Zone Manager ~p terminating~n", [Data#state.zone_id]),
     ok.
 
-code_change(_OldVsn, State, _Extra) ->
-    {ok, State}.
+code_change(_OldVsn, State, Data, _Extra) ->
+    {ok, State, Data}.
 
-%% Internal functions
-update_control_center_timer(ZoneServer) ->
-    timer:sleep(?UPDATE_INTERVAL),
-    case ets:lookup(zone_stats, update_stats) of
-        [{_, true}] -> 
-            gen_server:cast(ZoneServer, {update_stats});
-        [{_, false}] -> 
-            ok
-    end,
-    update_control_center_timer(ZoneServer).
+%%====================================================================
+%% Internal Functions
+%%====================================================================
 
-%% Create couriers with IDs
-create_couriers(0, _Center, _Zone) -> [];
-create_couriers(N, Center, Zone) ->
-    CourierID = list_to_atom(lists:flatten(io_lib:format("courier_~p_~p", [Zone, N]))),
-    CourierPID = spawn(fun() -> courier_process_loop(CourierID, Zone, Center, zone_manager) end),
-    [{CourierID, CourierPID} | create_couriers(N-1, Center, Zone)].
+handle_new_household_package(HouseholdId, PackageId, Data) ->
+    io:format("Zone Manager: Received new package ~p from household ~p~n", [PackageId, HouseholdId]),
+    
+    %% Update total orders
+    TotalOrders = Data#state.total_orders + 1,
+    
+    %% Update package count for this household
+    CurrentCount = maps:get(HouseholdId, Data#state.package_order_counts, 0),
+    NewCount = CurrentCount + 1,
+    UpdatedCounts = maps:put(HouseholdId, NewCount, Data#state.package_order_counts),
+    
+    %% Add to waiting packages queue
+    Waiting = Data#state.waiting_packages,
+    
+    %% Update state
+    NewData = Data#state{
+        total_orders = TotalOrders,
+        waiting_packages = Waiting ++ [PackageId],
+        package_order_counts = UpdatedCounts
+    },
+    
+    
+    %% Optional: Send a lightweight zone summary (not all details)
+    logistics_state_collector:zone_state_changed(Data#state.zone, #{
+        status => live,
+        node => node(),
+        total_orders => TotalOrders,
+        waiting_packages => length(Waiting) + 1,
+        active_deliveries => Data#state.active_deliveries
+        %% NO household_orders map! Too heavy!
+    }),
+    
+    {keep_state, NewData}.
 
-start_households(0, _Bounds) -> [];
-start_households(N, Bounds) ->
-    HouseholdPID = spawn(fun() -> household_process(N, node(), Bounds) end),
-    [HouseholdPID | start_households(N-1, Bounds)].
-
-broadcast_to_processes([], _Message) -> ok;
-broadcast_to_processes([PID|Rest], Message) ->
-    PID ! Message,
-    broadcast_to_processes(Rest, Message).
-
-try_assign_orders([], Couriers) -> {[], Couriers};
-try_assign_orders(Orders, []) -> {Orders, []};
-try_assign_orders([Order|RestOrders], [{CourierID, CourierPID}|RestCouriers]) ->
-    CourierPID ! {assign_order, Order},
-    try_assign_orders(RestOrders, RestCouriers).
-
-%% Send updates to visualization server
-send_to_visualization(VizNode, Message) ->
-    case whereis(visualization_server) of
+report_zone_state(Zone, Data) when is_record(Data, state) ->
+    case global:whereis_name(logistics_state_collector) of
         undefined ->
-            %% Try remote node
-            gen_server:cast({visualization_server, VizNode}, Message);
-        _Pid ->
-            %% Local node
-            gen_server:cast(visualization_server, Message)
+            erlang:send_after(2000, self(), {retry_report_state, Zone, Data});
+        Pid when is_pid(Pid) ->
+            StateData = #{
+                status => live,  %% חשוב! תמיד שלח status
+                node => node(),
+                couriers => 0,
+                deliveries => 0,
+                waiting_packages => length(Data#state.waiting_packages),
+                active_deliveries => Data#state.active_deliveries,
+                total_delivered => Data#state.total_deliveries,
+                failed_deliveries => Data#state.failed_deliveries,
+                total_orders => Data#state.total_orders
+            },
+            logistics_state_collector:zone_state_changed(Zone, StateData)
     end.
 
-%% Simple process skeletons
-package_process(OrderInfo) ->
-    receive
-        stop -> ok;
-        _ -> package_process(OrderInfo)
-    end.
-
-courier_process_loop(CourierID, Zone, Location, ZoneManager) ->
-    receive
-        {assign_order, Order} ->
-            BusinessLoc = maps:get(business_location, Order),
-            CustomerLoc = maps:get(customer_location, Order),
-            OrderID = maps:get(id, Order),
-            
-            %% Simulate movement to business
-            simulate_movement(CourierID, Location, BusinessLoc, 50, ZoneManager),
-            
-            %% Simulate movement to customer
-            simulate_movement(CourierID, BusinessLoc, CustomerLoc, 50, ZoneManager),
-            
-            %% Delivery complete
-            gen_server:cast(ZoneManager, {delivery_complete, CourierID, OrderID}),
-            
-            courier_process_loop(CourierID, Zone, CustomerLoc, ZoneManager);
-        pause -> 
-            receive resume -> courier_process_loop(CourierID, Zone, Location, ZoneManager) end;
-        stop -> ok;
-        _ -> courier_process_loop(CourierID, Zone, Location, ZoneManager)
-    end.
-
-simulate_movement(CourierID, {X1, Y1}, {X2, Y2}, Steps, ZoneManager) ->
-    DX = (X2 - X1) / Steps,
-    DY = (Y2 - Y1) / Steps,
-    move_step(CourierID, X1, Y1, DX, DY, Steps, ZoneManager).
-
-move_step(_CourierID, X, Y, _DX, _DY, 0, _ZoneManager) ->
-    {X, Y};
-move_step(CourierID, X, Y, DX, DY, Steps, ZoneManager) ->
-    NewX = X + DX,
-    NewY = Y + DY,
-    gen_server:cast(ZoneManager, {courier_position_update, CourierID, {NewX, NewY}}),
-    timer:sleep(50),  % 50ms per step
-    move_step(CourierID, NewX, NewY, DX, DY, Steps - 1, ZoneManager).
-
-household_process(ID, Zone, Bounds) ->
-    receive
-        pause -> 
-            receive resume -> household_process(ID, Zone, Bounds) end;
-        stop -> ok;
-        _ ->
-            timer:sleep(rand:uniform(10000)),
-            OrderID = erlang:unique_integer([positive]),
-            gen_server:cast(zone_manager, {order_placed, #{id => OrderID, zone => Zone}}),
-            household_process(ID, Zone, Bounds)
+%% Report state including household order counts - תיקון דומה
+report_zone_state_with_households(Zone, Data) when is_record(Data, state) ->
+    case global:whereis_name(logistics_state_collector) of
+        undefined ->
+            erlang:send_after(2000, self(), {retry_report_state_with_households, Zone, Data});
+        Pid when is_pid(Pid) ->
+            StateData = #{
+                status => live,  %% חשוב! גם כאן
+                node => node(),
+                couriers => 0,
+                deliveries => 0,
+                waiting_packages => length(Data#state.waiting_packages),
+                active_deliveries => Data#state.active_deliveries,
+                total_delivered => Data#state.total_deliveries,
+                failed_deliveries => Data#state.failed_deliveries,
+                total_orders => Data#state.total_orders,
+                household_orders => Data#state.package_order_counts
+            },
+            logistics_state_collector:zone_state_changed(Zone, StateData)
     end.

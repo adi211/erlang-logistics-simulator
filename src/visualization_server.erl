@@ -1,5 +1,5 @@
 %%%-------------------------------------------------------------------
-%%% @doc Visualization Server - Loads maps from external .erl files
+%%% @doc Visualization Server - Updated with State Collector Integration
 %%%-------------------------------------------------------------------
 -module(visualization_server).
 -behaviour(gen_server).
@@ -127,6 +127,22 @@ init(Args) ->
     %% Show frame
     wxFrame:show(Frame),
     
+    %% Subscribe to logistics state collector for updates
+    try
+        case global:whereis_name(logistics_state_collector) of
+            undefined ->
+                io:format("Visualization Server: State collector not found, will retry~n"),
+                timer:send_after(2000, self(), retry_subscribe);
+            CollectorPid when is_pid(CollectorPid) ->
+                gen_server:call(CollectorPid, {subscribe, self()}),
+                io:format("Visualization Server: Successfully subscribed to state collector~n")
+        end
+    catch
+        Type:Error ->
+            io:format("Visualization Server: Error subscribing to state collector: ~p:~p~n", [Type, Error]),
+            timer:send_after(2000, self(), retry_subscribe)
+    end,
+    
     %% Force initial paint
     wxPanel:refresh(MapPanel),
     
@@ -139,6 +155,119 @@ init(Args) ->
         current_map = InitialMapModule,
         wx_env = WxEnv
     }}.
+
+%%--------------------------------------------------------------------
+%% Handle state updates from logistics_state_collector
+%%--------------------------------------------------------------------
+%% הקוד המתוקן - משתמש במפתחות אטומים
+handle_info({state_update, <<"package_update">>, Data}, State) ->
+    %% Get data - השתמש באטומים במקום בבינאריים
+    PackageId = maps:get(id, Data, <<"unknown">>),
+    Status = maps:get(status, Data, <<"unknown">>),
+    
+    %% Convert binary to string for display
+    PkgStr = binary_to_list(PackageId),
+    StatusStr = binary_to_list(Status),
+    
+    %% Create log message
+    LogMsg = io_lib:format("Package ~s: ~s", [PkgStr, StatusStr]),
+    
+    %% Add to log
+    add_log_entry(State#state.log_panel, info, "Package", LogMsg),
+    
+    %% Update map display based on status
+    case StatusStr of
+        "ordered" ->
+            %% Extract house number from package ID: "north_home_18_1_timestamp"
+            case string:tokens(PkgStr, "_") of
+                [_Zone, "home", NumStr | _] ->
+                    HouseKey = list_to_atom("house_" ++ NumStr),
+                    CurrentOrders = case ets:lookup(house_orders, HouseKey) of
+                        [{_, Count}] -> Count;
+                        [] -> 0
+                    end,
+                    ets:insert(house_orders, {HouseKey, CurrentOrders + 1});
+                _ -> ok
+            end;
+        "delivered" ->
+            case string:tokens(PkgStr, "_") of
+                [_Zone, "home", NumStr | _] ->
+                    HouseKey = list_to_atom("house_" ++ NumStr),
+                    CurrentOrders = case ets:lookup(house_orders, HouseKey) of
+                        [{_, Count}] when Count > 0 -> Count;
+                        _ -> 1
+                    end,
+                    ets:insert(house_orders, {HouseKey, CurrentOrders - 1});
+                _ -> ok
+            end;
+        _ -> ok
+    end,
+    
+    %% Refresh map
+    wxPanel:refresh(State#state.map_panel),
+    {noreply, State};
+
+handle_info({state_update, <<"zone_update">>, _Data}, State) ->
+    wxPanel:refresh(State#state.map_panel),
+    {noreply, State};
+
+handle_info({state_update, <<"courier_update">>, _Data}, State) ->
+    {noreply, State};
+
+handle_info(retry_subscribe, State) ->
+    io:format("Visualization Server: Retrying subscription~n"),
+    try
+        case global:whereis_name(logistics_state_collector) of
+            undefined ->
+                timer:send_after(5000, self(), retry_subscribe);
+            CollectorPid when is_pid(CollectorPid) ->
+                logistics_state_collector:subscribe(self()),
+                io:format("Visualization Server: Successfully subscribed~n")
+        end
+    catch
+        _:_ ->
+            timer:send_after(5000, self(), retry_subscribe)
+    end,
+    {noreply, State};
+
+handle_info({nodedown, Node}, State) ->
+    io:format("Visualization Server: Node ~p down~n", [Node]),
+    {noreply, State};
+
+handle_info(_Info, State) ->
+    {noreply, State}.
+
+	
+extract_house_from_package_id(PackageId) ->
+    PackageStr = case PackageId of
+        Bin when is_binary(Bin) -> binary_to_list(Bin);
+        Str when is_list(Str) -> Str;
+        _ -> ""
+    end,
+    
+    %% Package ID בפורמט: "north_home_3_1_timestamp"
+    case string:tokens(PackageStr, "_") of
+        [_Zone, "home", NumStr | _] ->
+            {ok, list_to_atom("house_" ++ NumStr)};
+        _ ->
+            error
+    end.
+	
+
+
+%% --------------------------------------------------------------------
+%% Helper function to safely format different data types for display
+%% --------------------------------------------------------------------
+format_for_display(undefined) -> "unassigned";
+format_for_display(null) -> "unassigned";  
+format_for_display(<<"null">>) -> "unassigned";
+format_for_display(Value) when is_binary(Value) -> binary_to_list(Value);
+format_for_display(Value) when is_list(Value) -> Value;
+format_for_display(Value) when is_atom(Value) -> atom_to_list(Value);
+format_for_display(Value) when is_integer(Value) -> integer_to_list(Value);
+format_for_display(_Other) -> "unknown".
+
+
 
 %%--------------------------------------------------------------------
 %% Load map data from external .erl module file
@@ -178,6 +307,7 @@ load_map_from_file(MapModuleName) ->
                 %% Extract components from the map
                 Homes = maps:get(homes, MapData, []),
                 Businesses = maps:get(businesses, MapData, []),
+                Roads = maps:get(roads, MapData, []),  %% Extract roads
                 Dimensions = maps:get(dimensions, MapData, #{width => 1200, height => 800}),
                 Stats = maps:get(stats, MapData, #{}),
                 
@@ -188,11 +318,12 @@ load_map_from_file(MapModuleName) ->
                 %% Store in ETS
                 ets:insert(map_data, {homes, ConvertedHomes}),
                 ets:insert(map_data, {businesses, ConvertedBusinesses}),
+                ets:insert(map_data, {roads, Roads}),  %% Store roads in ETS
                 ets:insert(map_data, {dimensions, Dimensions}),
                 ets:insert(map_data, {stats, Stats}),
                 
-                io:format("Map loaded: ~p homes, ~p businesses~n", 
-                          [length(ConvertedHomes), length(ConvertedBusinesses)]),
+                io:format("Map loaded: ~p homes, ~p businesses, ~p roads~n", 
+                          [length(ConvertedHomes), length(ConvertedBusinesses), length(Roads)]),
                 ok;
             false ->
                 io:format("Module ~p doesn't export get_map/0~n", [ModuleAtom]),
@@ -256,6 +387,7 @@ load_default_map() ->
     
     ets:insert(map_data, {homes, DefaultHomes}),
     ets:insert(map_data, {businesses, DefaultBusinesses}),
+    ets:insert(map_data, {roads, []}),  %% Empty roads list for default
     ets:insert(map_data, {dimensions, #{width => 1200, height => 800}}),
     ets:insert(map_data, {stats, #{total_homes => 7, total_businesses => 3}}).
 
@@ -274,8 +406,12 @@ on_paint_map(#wx{obj = Panel}, _) ->
         %% Draw zones
         draw_zones(DC, W, H),
         
-        %% Draw grid
-        draw_grid(DC, W, H),
+        %% Draw roads from ETS
+        case ets:lookup(map_data, roads) of
+            [{roads, Roads}] when is_list(Roads) ->
+                draw_roads(DC, Roads);
+            _ -> ok
+        end,
         
         %% Draw homes from ETS
         case ets:lookup(map_data, homes) of
@@ -308,6 +444,20 @@ on_paint_map(#wx{obj = Panel}, _) ->
     
     wxPaintDC:destroy(DC),
     ok.
+
+%%--------------------------------------------------------------------
+%% Draw roads from map data
+%%--------------------------------------------------------------------
+draw_roads(DC, Roads) ->
+    %% Set pen for roads - gray color, 2 pixels width
+    wxDC:setPen(DC, wxPen:new({140, 140, 140}, [{width, 2}])),
+    lists:foreach(fun(Road) ->
+        X1 = maps:get(x1, Road),
+        Y1 = maps:get(y1, Road),
+        X2 = maps:get(x2, Road),
+        Y2 = maps:get(y2, Road),
+        wxDC:drawLine(DC, {X1, Y1}, {X2, Y2})
+    end, Roads).
 
 %%--------------------------------------------------------------------
 %% Draw homes from map data
@@ -436,29 +586,12 @@ draw_zones(DC, Width, _Height) ->
     wxDC:drawText(DC, "SOUTH ZONE", {20, 544}).
 
 %%--------------------------------------------------------------------
-%% Draw grid
-%%--------------------------------------------------------------------
-draw_grid(DC, Width, _Height) ->
-    wxDC:setPen(DC, wxPen:new({180, 180, 180}, [{width, 1}])),
-    
-    %% Draw grid based on the actual map coordinates
-    %% Horizontal lines
-    lists:foreach(fun(Y) ->
-        wxDC:drawLine(DC, {46, Y}, {Width - 46, Y})
-    end, [30, 92, 153, 215, 276, 338, 400, 461, 523, 584, 646, 707, 769]),
-    
-    %% Vertical lines
-    lists:foreach(fun(X) ->
-        wxDC:drawLine(DC, {X, 30}, {X, 769})
-    end, [46, 138, 230, 323, 415, 507, 600, 692, 784, 876, 969, 1061, 1153]).
-
-%%--------------------------------------------------------------------
 %% Draw legend
 %%--------------------------------------------------------------------
 draw_legend(DC, Width) ->
     wxDC:setBrush(DC, wxBrush:new({255, 255, 255, 240})),
     wxDC:setPen(DC, wxPen:new({100, 100, 100})),
-    wxDC:drawRectangle(DC, {Width - 150, 30, 140, 180}),
+    wxDC:drawRectangle(DC, {Width - 150, 30, 140, 200}),
     
     Font = wxFont:new(9, ?wxFONTFAMILY_DEFAULT, ?wxFONTSTYLE_NORMAL, ?wxFONTWEIGHT_NORMAL),
     wxDC:setFont(DC, Font),
@@ -486,11 +619,17 @@ draw_legend(DC, Width) ->
     wxDC:drawCircle(DC, {Width - 135, 125}, 5),
     wxDC:drawText(DC, "Orders", {Width - 125, 120}),
     
-    %% Delivery route
-    wxDC:setPen(DC, wxPen:new({255, 140, 0}, [{width, 2}, {style, ?wxDOT}])),
+    %% Roads
+    wxDC:setPen(DC, wxPen:new({140, 140, 140}, [{width, 2}])),
     wxDC:drawLine(DC, {Width - 140, 145}, {Width - 100, 145}),
     wxDC:setTextForeground(DC, {0, 0, 0}),
-    wxDC:drawText(DC, "Route", {Width - 125, 140}).
+    wxDC:drawText(DC, "Road", {Width - 125, 140}),
+    
+    %% Delivery route
+    wxDC:setPen(DC, wxPen:new({255, 140, 0}, [{width, 2}, {style, ?wxDOT}])),
+    wxDC:drawLine(DC, {Width - 140, 165}, {Width - 100, 165}),
+    wxDC:setTextForeground(DC, {0, 0, 0}),
+    wxDC:drawText(DC, "Route", {Width - 125, 160}).
 
 %%--------------------------------------------------------------------
 %% Initialize log panel
@@ -607,23 +746,20 @@ handle_cast(_Request, State) ->
     {noreply, State}.
 
 %%--------------------------------------------------------------------
-%% Handle info
-%%--------------------------------------------------------------------
-handle_info({nodedown, Node}, State) ->
-    io:format("Visualization Server: Node ~p down~n", [Node]),
-    Message = io_lib:format("Lost connection to node ~p", [Node]),
-    add_log_entry(State#state.log_panel, error, "Network", Message),
-    update_status_bar(State#state.frame, "Node disconnected", 2),
-    {noreply, State};
-
-handle_info(_Info, State) ->
-    {noreply, State}.
-
-%%--------------------------------------------------------------------
 %% Terminate
 %%--------------------------------------------------------------------
 terminate(_Reason, _State) ->
     io:format("Visualization Server: Terminating~n"),
+    %% Unsubscribe from state collector if possible
+    try
+        case global:whereis_name(logistics_state_collector) of
+            undefined -> ok;
+            CollectorPid when is_pid(CollectorPid) ->
+                gen_server:call(CollectorPid, {unsubscribe, self()})
+        end
+    catch
+        _:_ -> ok
+    end,
     ok.
 
 %%--------------------------------------------------------------------

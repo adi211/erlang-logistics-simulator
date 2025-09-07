@@ -359,7 +359,7 @@ update_courier_position(Tracking) ->
                 %% וודא שה-progress לא חורג מ-1.0
                 ProgressOnSegment = if
                     SegmentDistance > 0 -> 
-                        min(1.0, Tracking#tracking.distance_on_segment / SegmentDistance);
+                        erlang:min(1.0, Tracking#tracking.distance_on_segment / SegmentDistance);
                     true -> 1.0
                 end,
 
@@ -376,7 +376,7 @@ update_courier_position(Tracking) ->
                 PositionData = #{
                     position => #{x => round(CurrentX), y => round(CurrentY)},
                     destination => list_to_binary(Tracking#tracking.end_location_id),
-                    progress => min(1.0, Tracking#tracking.traveled_distance / max(1, Tracking#tracking.total_route_distance)),
+                    progress => erlang:min(1.0, Tracking#tracking.traveled_distance / max(1, Tracking#tracking.total_route_distance)),
                     eta => ETA_Seconds * 1000,
                     speed => round(Tracking#tracking.speed * 3.6),
                     status => moving
@@ -395,9 +395,7 @@ update_courier_position(Tracking) ->
         end
     end.
 
-%% פונקציית עזר חדשה
-min(A, B) when A < B -> A;
-min(_, B) -> B.
+
 
 %% @doc מטפל בהגעה ליעד.
 handle_arrival(Tracking) ->

@@ -187,11 +187,11 @@ is_on_segment(PX, PY, X1, Y1, X2, Y2, Tolerance) ->
     %% Check if point is close to the line segment
     
     %% First check bounding box
-    MinX = min(X1, X2) - Tolerance,
-    MaxX = max(X1, X2) + Tolerance,
-    MinY = min(Y1, Y2) - Tolerance,
-    MaxY = max(Y1, Y2) + Tolerance,
-    
+    MinX = erlang:min(X1, X2) - Tolerance,
+    MaxX = erlang:max(X1, X2) + Tolerance,
+    MinY = erlang:min(Y1, Y2) - Tolerance,
+    MaxY = erlang:max(Y1, Y2) + Tolerance,
+
     if
         PX >= MinX, PX =< MaxX, PY >= MinY, PY =< MaxY ->
             %% Calculate perpendicular distance to line
@@ -202,7 +202,7 @@ is_on_segment(PX, PY, X1, Y1, X2, Y2, Tolerance) ->
                 true ->
                     %% Project point onto line
                     T = ((PX-X1)*(X2-X1) + (PY-Y1)*(Y2-Y1)) / (LineLen*LineLen),
-                    T2 = max(0, min(1, T)),
+                    T2 = erlang:max(0, erlang:min(1, T)),
                     ProjX = X1 + T2 * (X2-X1),
                     ProjY = Y1 + T2 * (Y2-Y1),
                     point_distance(PX, PY, ProjX, ProjY) =< Tolerance
@@ -296,55 +296,9 @@ distance_point_to_segment(Location, Road) ->
             infinity
     end.
 
-%%====================================================================
-%% Find only endpoints where 3+ roads meet (real junctions)
-%%====================================================================
-find_critical_endpoints(RoadSegments) ->
-    %% Count how many segments connect to each endpoint
-    EndpointCounts = lists:foldl(fun(Segment, Acc) ->
-        X1 = maps:get(x1, Segment, 0),
-        Y1 = maps:get(y1, Segment, 0),
-        X2 = maps:get(x2, Segment, 0),
-        Y2 = maps:get(y2, Segment, 0),
-        
-        Acc1 = maps:update_with({X1, Y1}, fun(V) -> V + 1 end, 1, Acc),
-        maps:update_with({X2, Y2}, fun(V) -> V + 1 end, 1, Acc1)
-    end, #{}, RoadSegments),
-    
-    %% Keep only points where 3+ roads meet
-    CriticalPoints = maps:fold(fun(Point, Count, Acc) ->
-        if
-            Count >= 3 -> sets:add_element(Point, Acc);
-            true -> Acc
-        end
-    end, sets:new(), EndpointCounts),
-    
-    CriticalPoints.
 
-%%====================================================================
-%% Find only real intersections (where roads cross)
-%%====================================================================
-find_real_intersections(Segments) ->
-    find_intersections_recursive(Segments, sets:new()).
 
-%%====================================================================
-%% Find all junction points (endpoints and intersections)
-%%====================================================================
-find_all_junction_points(RoadSegments) ->
-    %% Get all endpoints
-    Endpoints = lists:foldl(fun(Segment, Acc) ->
-        X1 = maps:get(x1, Segment, 0),
-        Y1 = maps:get(y1, Segment, 0),
-        X2 = maps:get(x2, Segment, 0),
-        Y2 = maps:get(y2, Segment, 0),
-        sets:add_element({X1, Y1}, sets:add_element({X2, Y2}, Acc))
-    end, sets:new(), RoadSegments),
-    
-    %% Find intersections between segments
-    Intersections = find_segment_intersections(RoadSegments),
-    
-    %% Combine all points
-    sets:union(Endpoints, Intersections).
+
 
 %%====================================================================
 %% Find intersection points between road segments
@@ -391,27 +345,7 @@ calculate_intersection(Seg1, Seg2) ->
 
 
 
-%%====================================================================
-%% Create roads along a road segment
-%%====================================================================
-create_roads_on_segment(Segment, AllLocations) ->
-    X1 = maps:get(x1, Segment, 0),
-    Y1 = maps:get(y1, Segment, 0),
-    X2 = maps:get(x2, Segment, 0),
-    Y2 = maps:get(y2, Segment, 0),
-    
-    %% Find all locations on this segment
-    LocationsOnSegment = find_locations_on_segment({X1,Y1}, {X2,Y2}, AllLocations, 15),
-    
-    %% Sort by distance from start
-    SortedLocations = lists:sort(fun(A, B) ->
-        DistA = point_distance(A#location.x, A#location.y, X1, Y1),
-        DistB = point_distance(B#location.x, B#location.y, X1, Y1),
-        DistA =< DistB
-    end, LocationsOnSegment),
-    
-    %% Create roads between consecutive locations
-    create_consecutive_roads(SortedLocations).
+
 
 %%====================================================================
 %% Find locations on or near a segment
@@ -426,11 +360,11 @@ is_location_on_segment(Loc, X1, Y1, X2, Y2, Tolerance) ->
     PY = Loc#location.y,
     
     %% Check bounding box
-    MinX = min(X1, X2) - Tolerance,
-    MaxX = max(X1, X2) + Tolerance,
-    MinY = min(Y1, Y2) - Tolerance,
-    MaxY = max(Y1, Y2) + Tolerance,
-    
+    MinX = erlang:min(X1, X2) - Tolerance,
+    MaxX = erlang:max(X1, X2) + Tolerance,
+    MinY = erlang:min(Y1, Y2) - Tolerance,
+    MaxY = erlang:max(Y1, Y2) + Tolerance,
+
     if
         PX >= MinX, PX =< MaxX, PY >= MinY, PY =< MaxY ->
             %% Check distance to line
@@ -446,7 +380,7 @@ distance_point_to_line(PX, PY, X1, Y1, X2, Y2) ->
         LineLen < 0.001 -> 
             point_distance(PX, PY, X1, Y1);
         true ->
-            T = max(0, min(1, ((PX-X1)*(X2-X1) + (PY-Y1)*(Y2-Y1)) / (LineLen*LineLen))),
+            T = erlang:max(0, erlang:min(1, ((PX-X1)*(X2-X1) + (PY-Y1)*(Y2-Y1)) / (LineLen*LineLen))),
             ProjX = X1 + T * (X2-X1),
             ProjY = Y1 + T * (Y2-Y1),
             point_distance(PX, PY, ProjX, ProjY)
@@ -480,16 +414,7 @@ create_consecutive_roads([L1, L2 | Rest]) ->
 %%====================================================================
 %% Connect homes/businesses to road network
 %%====================================================================
-connect_locations_to_road_network(AllLocations) ->
-    Homes = [L || L <- AllLocations, L#location.type == home],
-    Businesses = [L || L <- AllLocations, L#location.type == business],
-    Junctions = [L || L <- AllLocations, L#location.type == junction],
-    
-    %% Connect each home/business to nearest junctions
-    lists:flatmap(fun(Loc) ->
-        NearestJunctions = find_k_nearest(Loc, Junctions, 2),
-        create_connection_roads(Loc, NearestJunctions)
-    end, Homes ++ Businesses).
+
 
 create_connection_roads(Location, Junctions) ->
     lists:flatmap(fun(Junction) ->
@@ -861,8 +786,3 @@ verify_basic_connectivity(Locations) ->
         end
     end, Businesses).
 
-min(A, B) when A < B -> A;
-min(_, B) -> B.
-
-max(A, B) when A > B -> A;
-max(_, B) -> B.

@@ -245,7 +245,7 @@ handle_info(refresh_animation, State) ->
         Duration = maps:get(duration, AnimData, 1000),
         
         %% Calculate animation progress
-        Progress = min(1.0, (CurrentTime - StartTime) / Duration),
+        Progress = erlang:min(1.0, (CurrentTime - StartTime) / Duration),
         
         %% Interpolate position
         {FromX, FromY} = From,
@@ -1143,6 +1143,3 @@ update_status_bar(Frame, Text, Column) ->
             wxStatusBar:setStatusText(StatusBar, Text, [{number, Column}])
     end.
 
-%% Helper function - minimum of two numbers
-min(A, B) when A < B -> A;
-min(_, B) -> B.

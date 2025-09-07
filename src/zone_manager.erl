@@ -6,7 +6,6 @@
 -behaviour(gen_statem).
 -include("network_const.hrl").
 
-
 -include("header.hrl").
 -include("map_records.hrl").
 
@@ -187,7 +186,6 @@ handle_event(cast, {start_fresh_simulation, Config}, _StateName, Data) ->
     NewCouriers = create_fresh_couriers(Data#state.zone, NumCouriers, self(), LocationTrackerPid),
     
     %% Create new households
-    NumHouseholds = maps:get(num_households_per_zone, Config, 10),
     NewHouseholds = create_fresh_households(Data#state.zone, self()),
     
     InitialCounts = lists:foldl(fun({Id, _Pid}, Acc) ->
@@ -259,7 +257,7 @@ handle_event(cast, {resume_simulation}, _StateName, Data) ->
             %% Resume location tracker
             case Data#state.location_tracker_pid of
                 undefined -> ok;
-                TrackerPid -> location_tracker:resume()
+                _TrackerPid -> location_tracker:resume()
             end,
             
             {keep_state, Data#state{simulation_state = running}};
@@ -291,7 +289,7 @@ handle_event(cast, {pause_simulation}, _StateName, Data) ->
             %% Pause location tracker
             case Data#state.location_tracker_pid of
                 undefined -> ok;
-                TrackerPid -> location_tracker:pause()
+                _TrackerPid -> location_tracker:pause()
             end,
             
             {keep_state, Data#state{simulation_state = paused}};
@@ -455,14 +453,14 @@ handle_event(cast, {package_delivered, PackageId, CourierId}, monitoring, Data) 
     UpdatedCounts = case string:tokens(PackageId, "_") of
         [_Zone, HouseholdId | _] ->
             CurrentCount = maps:get(HouseholdId, Data#state.package_order_counts, 1),
-            maps:put(HouseholdId, max(0, CurrentCount - 1), Data#state.package_order_counts);
+            maps:put(HouseholdId, erlang:max(0, CurrentCount - 1), Data#state.package_order_counts);
         _ ->
             Data#state.package_order_counts
     end,
     
     NewData = Data#state{
         total_deliveries = Total + 1,
-        active_deliveries = max(0, ActiveDeliveries - 1),
+        active_deliveries = erlang:max(0, ActiveDeliveries - 1),
         package_order_counts = UpdatedCounts
     },
     report_zone_state(Zone, NewData),
@@ -618,7 +616,7 @@ create_fresh_households(Zone, ZoneManagerPid) ->
             case household:start_link(HouseholdId, Zone, ZoneManagerPid) of
                 {ok, Pid} ->
                     Parent ! {{household_started, self()}, {ok, {HouseholdId, Pid}}};
-                Error ->
+                _Error ->
                     Parent ! {{household_started, self()}, {error, HouseholdId}}
             end
         end)
@@ -739,10 +737,5 @@ collect_results([Pid | Rest], Acc) ->
         lists:reverse(Acc)
     end.
 	
-	
 
-min(A, B) when A < B -> A;
-min(_, B) -> B.
 
-max(A, B) when A > B -> A;
-max(_, B) -> B.

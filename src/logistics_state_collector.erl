@@ -6,8 +6,6 @@
 -module(logistics_state_collector).
 -behaviour(gen_server).
 
-%% Define global name macro
--define(NAME, {global, ?MODULE}).
 
 %% API
 -export([start_link/0, subscribe/1, unsubscribe/1]).

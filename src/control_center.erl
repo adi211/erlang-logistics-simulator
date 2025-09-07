@@ -5,7 +5,7 @@
 -module(control_center).
 -behaviour(gen_server).
 
--include("header.hrl").
+
 -include("network_const.hrl").
 
 %% API

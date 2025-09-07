@@ -5,7 +5,6 @@
 -behaviour(wx_object).
 
 -include_lib("wx/include/wx.hrl").
--include("header.hrl").
 -include("network_const.hrl").
 
 -export([start/0]).

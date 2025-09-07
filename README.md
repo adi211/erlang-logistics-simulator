@@ -9,34 +9,50 @@ Build
 
 $ rebar3 compile
 
+
+
 Visualization node: 
+
 $ rebar3 shell --name visualization@127.0.0.1 --setcookie logistics
 
 $ visualization_server:start().
 
+
+
 control node:
+
 $ rebar3 shell --name control@127.0.0.1 --setcookie logistics
 
 $ control_center:start().
 
 
+
 zone north node:
+
 $ rebar3 shell --name zone_north@127.0.0.1 --setcookie logistics
 
 $ zone_manager:start().
 
 
+
 zone center node:
+
 $ rebar3 shell --name zone_center@127.0.0.1 --setcookie logistics
 
 $ zone_manager:start().
 
+
+
 zone south node:
+
 $ rebar3 shell --name zone_south@127.0.0.1 --setcookie logistics
 
 $ zone_manager:start().
 
+
+
 backup node:
+
 $ rebar3 shell --name backup@127.0.0.1 --setcookie logistics
 
 $ backup_node:start().

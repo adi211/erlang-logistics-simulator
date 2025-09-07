@@ -5,6 +5,8 @@
 -module(household).
 -behaviour(gen_server).
 
+-include("network_const.hrl").
+
 %% API
 -export([start_link/3]).
 
@@ -140,7 +142,7 @@ handle_info(create_order, State = #state{state_status = running,
             
             %% Start package process via RPC to control node where the code exists
             try
-                case rpc:call('control@127.0.0.1', package, start_link, [PackageId, Zone]) of
+                case rpc:call(?CTRL_NODE, package, start_link, [PackageId, Zone]) of
                     {ok, _Pid} ->
                         io:format("Household ~p: Package ~p process started on control node~n", 
                                  [HouseholdId, PackageId]);

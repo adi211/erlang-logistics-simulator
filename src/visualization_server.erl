@@ -5,10 +5,13 @@
 -behaviour(gen_server).
 
 -include_lib("wx/include/wx.hrl").
+-include("map_records.hrl").  % For location record
 
 -export([start/0, start/1, start_link/0]).
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2, terminate/2, code_change/3]).
 -export([update_courier_position/2, log_message/3, update_house_orders/2]).
+-export([update_courier_status/2, set_courier_route/2]).
+-export([package_delivered/1]).
 
 -define(SERVER, ?MODULE).
 
@@ -38,11 +41,20 @@ start_link() ->
 update_courier_position(CourierId, Position) ->
     gen_server:cast(?SERVER, {update_courier_position, CourierId, Position}).
 
+update_courier_status(CourierId, Status) ->
+    gen_server:cast(?SERVER, {update_courier_status, CourierId, Status}).
+
+set_courier_route(CourierId, RouteData) ->
+    gen_server:cast(?SERVER, {set_courier_route, CourierId, RouteData}).
+
 update_house_orders(HouseId, Orders) ->
     gen_server:cast(?SERVER, {update_house_orders, HouseId, Orders}).
 
 log_message(Level, Category, Message) ->
     gen_server:cast(?SERVER, {log_message, Level, Category, Message}).
+	
+package_delivered(HouseId) ->
+    gen_server:cast(?SERVER, {package_delivered, HouseId}).
 
 %%--------------------------------------------------------------------
 %% gen_server callbacks
@@ -66,6 +78,11 @@ init(Args) ->
     ets:new(map_data, [set, named_table, public]),
     ets:new(courier_positions, [set, named_table, public]),
     ets:new(house_orders, [set, named_table, public]),
+    
+    %% New ETS tables for enhanced visualization
+    ets:new(courier_routes, [set, named_table, public]),      % מסלולי שליחים
+    ets:new(courier_status, [set, named_table, public]),      % סטטוס חבילה
+    ets:new(courier_animations, [set, named_table, public]),  % אנימציות
     
     %% Load initial map data from external file
     load_map_from_file(InitialMapModule),
@@ -146,6 +163,9 @@ init(Args) ->
     %% Force initial paint
     wxPanel:refresh(MapPanel),
     
+    %% Start animation timer for smooth courier movement (20 FPS) - FIXED
+    timer:send_interval(50, refresh_animation),
+    
     {ok, #state{
         frame = Frame,
         notebook = Notebook,
@@ -159,9 +179,8 @@ init(Args) ->
 %%--------------------------------------------------------------------
 %% Handle state updates from logistics_state_collector
 %%--------------------------------------------------------------------
-%% הקוד המתוקן - משתמש במפתחות אטומים
 handle_info({state_update, <<"package_update">>, Data}, State) ->
-    %% Get data - השתמש באטומים במקום בבינאריים
+    %% Get data
     PackageId = maps:get(id, Data, <<"unknown">>),
     Status = maps:get(status, Data, <<"unknown">>),
     
@@ -214,6 +233,50 @@ handle_info({state_update, <<"zone_update">>, _Data}, State) ->
 handle_info({state_update, <<"courier_update">>, _Data}, State) ->
     {noreply, State};
 
+handle_info(refresh_animation, State) ->
+    %% Update all courier animations for smooth movement
+    CurrentTime = erlang:monotonic_time(millisecond),
+    
+    AllAnimations = ets:tab2list(courier_animations),
+    lists:foreach(fun({CourierId, AnimData}) ->
+        From = maps:get(from, AnimData),
+        To = maps:get(to, AnimData),
+        StartTime = maps:get(start_time, AnimData),
+        Duration = maps:get(duration, AnimData, 1000),
+        
+        %% Calculate animation progress
+        Progress = min(1.0, (CurrentTime - StartTime) / Duration),
+        
+        %% Interpolate position
+        {FromX, FromY} = From,
+        {ToX, ToY} = To,
+        CurrentX = FromX + (ToX - FromX) * Progress,
+        CurrentY = FromY + (ToY - FromY) * Progress,
+        
+        %% Update displayed position
+        case ets:lookup(courier_positions, CourierId) of
+            [{_, {_, _, Data}}] ->
+                ets:insert(courier_positions, {CourierId, {round(CurrentX), round(CurrentY), Data}});
+            _ ->
+                ok
+        end,
+        
+        %% Remove completed animations
+        if Progress >= 1.0 ->
+            ets:delete(courier_animations, CourierId);
+        true ->
+            ok
+        end
+    end, AllAnimations),
+    
+    %% Refresh display only if there are animations or couriers
+    case ets:info(courier_positions, size) of
+        0 -> ok;
+        _ -> wxPanel:refresh(State#state.map_panel)
+    end,
+    
+    {noreply, State};
+
 handle_info(retry_subscribe, State) ->
     io:format("Visualization Server: Retrying subscription~n"),
     try
@@ -236,38 +299,6 @@ handle_info({nodedown, Node}, State) ->
 
 handle_info(_Info, State) ->
     {noreply, State}.
-
-	
-extract_house_from_package_id(PackageId) ->
-    PackageStr = case PackageId of
-        Bin when is_binary(Bin) -> binary_to_list(Bin);
-        Str when is_list(Str) -> Str;
-        _ -> ""
-    end,
-    
-    %% Package ID בפורמט: "north_home_3_1_timestamp"
-    case string:tokens(PackageStr, "_") of
-        [_Zone, "home", NumStr | _] ->
-            {ok, list_to_atom("house_" ++ NumStr)};
-        _ ->
-            error
-    end.
-	
-
-
-%% --------------------------------------------------------------------
-%% Helper function to safely format different data types for display
-%% --------------------------------------------------------------------
-format_for_display(undefined) -> "unassigned";
-format_for_display(null) -> "unassigned";  
-format_for_display(<<"null">>) -> "unassigned";
-format_for_display(Value) when is_binary(Value) -> binary_to_list(Value);
-format_for_display(Value) when is_list(Value) -> Value;
-format_for_display(Value) when is_atom(Value) -> atom_to_list(Value);
-format_for_display(Value) when is_integer(Value) -> integer_to_list(Value);
-format_for_display(_Other) -> "unknown".
-
-
 
 %%--------------------------------------------------------------------
 %% Load map data from external .erl module file
@@ -392,7 +423,7 @@ load_default_map() ->
     ets:insert(map_data, {stats, #{total_homes => 7, total_businesses => 3}}).
 
 %%--------------------------------------------------------------------
-%% Paint callback for map
+%% Paint callback for map - FIXED VERSION
 %%--------------------------------------------------------------------
 on_paint_map(#wx{obj = Panel}, _) ->
     DC = wxPaintDC:new(Panel),
@@ -406,17 +437,35 @@ on_paint_map(#wx{obj = Panel}, _) ->
         %% Draw zones
         draw_zones(DC, W, H),
         
-        %% Draw roads from ETS
+        %% Draw roads from ETS - with check
         case ets:lookup(map_data, roads) of
             [{roads, Roads}] when is_list(Roads) ->
-                draw_roads(DC, Roads);
+                try
+                    draw_roads(DC, Roads)
+                catch
+                    _:RoadErr ->
+                        io:format("Error drawing roads: ~p~n", [RoadErr])
+                end;
             _ -> ok
+        end,
+        
+        %% Draw courier routes - with try-catch
+        try
+            draw_courier_routes(DC)
+        catch
+            _:RouteError ->
+                io:format("Error drawing routes: ~p~n", [RouteError])
         end,
         
         %% Draw homes from ETS
         case ets:lookup(map_data, homes) of
             [{homes, Homes}] when is_list(Homes) -> 
-                draw_map_homes(DC, Homes);
+                try
+                    draw_map_homes(DC, Homes)
+                catch
+                    _:HomeErr ->
+                        io:format("Error drawing homes: ~p~n", [HomeErr])
+                end;
             _ -> 
                 io:format("No homes found in ETS~n")
         end,
@@ -424,22 +473,37 @@ on_paint_map(#wx{obj = Panel}, _) ->
         %% Draw businesses from ETS
         case ets:lookup(map_data, businesses) of
             [{businesses, Businesses}] when is_list(Businesses) -> 
-                draw_map_businesses(DC, Businesses);
+                try
+                    draw_map_businesses(DC, Businesses)
+                catch
+                    _:BizErr ->
+                        io:format("Error drawing businesses: ~p~n", [BizErr])
+                end;
             _ -> 
                 io:format("No businesses found in ETS~n")
         end,
         
-        %% Draw couriers from ETS
-        case ets:tab2list(courier_positions) of
-            [] -> ok;
-            Couriers -> draw_couriers_from_ets(DC, Couriers)
+        %% Draw couriers - with try-catch
+        try
+            case ets:tab2list(courier_positions) of
+                [] -> ok;
+                Couriers -> draw_enhanced_couriers(DC, Couriers)
+            end
+        catch
+            _:CourierError ->
+                io:format("Error drawing couriers: ~p~n", [CourierError])
         end,
         
         %% Draw legend
-        draw_legend(DC, W)
+        try
+            draw_legend(DC, W)
+        catch
+            _:LegendErr ->
+                io:format("Error drawing legend: ~p~n", [LegendErr])
+        end
     catch
-        _:Error ->
-            io:format("Paint error: ~p~n", [Error])
+        Type:Error ->
+            io:format("Paint error details: ~p:~p~n", [Type, Error])
     end,
     
     wxPaintDC:destroy(DC),
@@ -452,11 +516,15 @@ draw_roads(DC, Roads) ->
     %% Set pen for roads - gray color, 2 pixels width
     wxDC:setPen(DC, wxPen:new({140, 140, 140}, [{width, 2}])),
     lists:foreach(fun(Road) ->
-        X1 = maps:get(x1, Road),
-        Y1 = maps:get(y1, Road),
-        X2 = maps:get(x2, Road),
-        Y2 = maps:get(y2, Road),
-        wxDC:drawLine(DC, {X1, Y1}, {X2, Y2})
+        try
+            X1 = maps:get(x1, Road),
+            Y1 = maps:get(y1, Road),
+            X2 = maps:get(x2, Road),
+            Y2 = maps:get(y2, Road),
+            wxDC:drawLine(DC, {X1, Y1}, {X2, Y2})
+        catch
+            _:_ -> ok
+        end
     end, Roads).
 
 %%--------------------------------------------------------------------
@@ -464,43 +532,47 @@ draw_roads(DC, Roads) ->
 %%--------------------------------------------------------------------
 draw_map_homes(DC, Homes) ->
     lists:foreach(fun(Home) ->
-        X = maps:get(x, Home),
-        Y = maps:get(y, Home),
-        Zone = maps:get(zone, Home),
-        Id = maps:get(id, Home),
-        
-        %% Zone color
-        Color = case Zone of
-            north -> {100, 100, 200};
-            center -> {100, 200, 100};
-            south -> {200, 100, 100};
-            _ -> {150, 150, 150}
-        end,
-        
-        %% Draw house
-        wxDC:setBrush(DC, wxBrush:new(Color)),
-        wxDC:setPen(DC, wxPen:new({50, 50, 50}, [{width, 1}])),
-        wxDC:drawRectangle(DC, {X - 8, Y - 8, 16, 16}),
-        
-        %% Draw roof triangle
-        wxDC:setBrush(DC, wxBrush:new({139, 69, 19})),
-        Points = [{X - 10, Y - 8}, {X, Y - 15}, {X + 10, Y - 8}],
-        wxDC:drawPolygon(DC, Points),
-        
-        %% Check for orders in ETS
-        HouseKey = list_to_atom("house_" ++ integer_to_list(Id)),
-        case ets:lookup(house_orders, HouseKey) of
-            [{_, Orders}] when Orders > 0 ->
-                %% Draw order indicator
-                wxDC:setBrush(DC, wxBrush:new({255, 0, 0})),
-                wxDC:setPen(DC, wxPen:new({200, 0, 0}, [{width, 2}])),
-                wxDC:drawCircle(DC, {X + 12, Y - 12}, 10),
-                
-                Font = wxFont:new(9, ?wxFONTFAMILY_DEFAULT, ?wxFONTSTYLE_NORMAL, ?wxFONTWEIGHT_BOLD),
-                wxDC:setFont(DC, Font),
-                wxDC:setTextForeground(DC, {255, 255, 255}),
-                wxDC:drawText(DC, integer_to_list(Orders), {X + 8, Y - 18});
-            _ -> ok
+        try
+            X = maps:get(x, Home),
+            Y = maps:get(y, Home),
+            Zone = maps:get(zone, Home),
+            Id = maps:get(id, Home),
+            
+            %% Zone color
+            Color = case Zone of
+                north -> {100, 100, 200};
+                center -> {100, 200, 100};
+                south -> {200, 100, 100};
+                _ -> {150, 150, 150}
+            end,
+            
+            %% Draw house
+            wxDC:setBrush(DC, wxBrush:new(Color)),
+            wxDC:setPen(DC, wxPen:new({50, 50, 50}, [{width, 1}])),
+            wxDC:drawRectangle(DC, {X - 8, Y - 8, 16, 16}),
+            
+            %% Draw roof triangle
+            wxDC:setBrush(DC, wxBrush:new({139, 69, 19})),
+            Points = [{X - 10, Y - 8}, {X, Y - 15}, {X + 10, Y - 8}],
+            wxDC:drawPolygon(DC, Points),
+            
+            %% Check for orders in ETS
+            HouseKey = list_to_atom("house_" ++ integer_to_list(Id)),
+            case ets:lookup(house_orders, HouseKey) of
+                [{_, Orders}] when Orders > 0 ->
+                    %% Draw order indicator
+                    wxDC:setBrush(DC, wxBrush:new({255, 0, 0})),
+                    wxDC:setPen(DC, wxPen:new({200, 0, 0}, [{width, 2}])),
+                    wxDC:drawCircle(DC, {X + 12, Y - 12}, 10),
+                    
+                    Font = wxFont:new(9, ?wxFONTFAMILY_DEFAULT, ?wxFONTSTYLE_NORMAL, ?wxFONTWEIGHT_BOLD),
+                    wxDC:setFont(DC, Font),
+                    wxDC:setTextForeground(DC, {255, 255, 255}),
+                    wxDC:drawText(DC, integer_to_list(Orders), {X + 8, Y - 18});
+                _ -> ok
+            end
+        catch
+            _:_ -> ok
         end
     end, Homes).
 
@@ -509,48 +581,246 @@ draw_map_homes(DC, Homes) ->
 %%--------------------------------------------------------------------
 draw_map_businesses(DC, Businesses) ->
     lists:foreach(fun(Business) ->
-        X = maps:get(x, Business),
-        Y = maps:get(y, Business),
-        Zone = maps:get(zone, Business),
-        
-        %% Draw business as larger golden square
-        wxDC:setBrush(DC, wxBrush:new({255, 215, 0})),
-        wxDC:setPen(DC, wxPen:new({0, 0, 0}, [{width, 3}])),
-        wxDC:drawRectangle(DC, {X - 30, Y - 30, 60, 60}),
-        
-        %% Label
-        Font = wxFont:new(12, ?wxFONTFAMILY_DEFAULT, ?wxFONTSTYLE_NORMAL, ?wxFONTWEIGHT_BOLD),
-        wxDC:setFont(DC, Font),
-        wxDC:setTextForeground(DC, {0, 0, 0}),
-        
-        Label = case Zone of
-            north -> "DC-N";
-            center -> "DC-C";
-            south -> "DC-S";
-            _ -> "DC"
-        end,
-        wxDC:drawText(DC, Label, {X - 18, Y - 5})
+        try
+            X = maps:get(x, Business),
+            Y = maps:get(y, Business),
+            Zone = maps:get(zone, Business),
+            
+            %% Draw business as larger golden square
+            wxDC:setBrush(DC, wxBrush:new({255, 215, 0})),
+            wxDC:setPen(DC, wxPen:new({0, 0, 0}, [{width, 3}])),
+            wxDC:drawRectangle(DC, {X - 30, Y - 30, 60, 60}),
+            
+            %% Label
+            Font = wxFont:new(12, ?wxFONTFAMILY_DEFAULT, ?wxFONTSTYLE_NORMAL, ?wxFONTWEIGHT_BOLD),
+            wxDC:setFont(DC, Font),
+            wxDC:setTextForeground(DC, {0, 0, 0}),
+            
+            Label = case Zone of
+                north -> "DC-N";
+                center -> "DC-C";
+                south -> "DC-S";
+                _ -> "DC"
+            end,
+            wxDC:drawText(DC, Label, {X - 18, Y - 5})
+        catch
+            _:_ -> ok
+        end
     end, Businesses).
 
 %%--------------------------------------------------------------------
-%% Draw couriers from ETS
+%% Draw courier routes on map - SIMPLE VERSION
 %%--------------------------------------------------------------------
-draw_couriers_from_ets(DC, CourierList) ->
-    lists:foreach(fun({CourierId, {X, Y}}) ->
-        %% Draw courier as vehicle
-        wxDC:setBrush(DC, wxBrush:new({0, 150, 0})),
-        wxDC:setPen(DC, wxPen:new({0, 0, 0}, [{width, 2}])),
-        wxDC:drawRoundedRectangle(DC, {X - 15, Y - 10, 30, 20}, 3),
+draw_courier_routes(DC) ->
+    Routes = ets:tab2list(courier_routes),
+    lists:foreach(fun({CourierId, RouteData}) ->
+        try
+            case RouteData of
+                #{type := Type, path := Path} when is_list(Path), length(Path) > 1 ->
+                    Color = case Type of
+                        pickup -> {255, 140, 0};    % Orange
+                        delivery -> {0, 200, 0};     % Green  
+                        _ -> {100, 100, 100}         % Gray
+                    end,
+                    draw_full_route_path(DC, Path, Color, CourierId);
+                _ ->
+                    ok
+            end
+        catch
+            _:_ -> ok
+        end
+    end, Routes).
+
+%%--------------------------------------------------------------------
+%% Draw complete route path following waypoints
+%%--------------------------------------------------------------------
+draw_full_route_path(_DC, [], _Color, _CourierId) -> ok;
+draw_full_route_path(_DC, [_], _Color, _CourierId) -> ok;
+draw_full_route_path(DC, Path, Color, _CourierId) when is_list(Path) ->
+    %% Convert all path location IDs to coordinates
+    Coords = lists:filtermap(fun(LocationId) ->
+        case get_location_coordinates_safe(LocationId) of
+            {ok, X, Y} -> {true, {X, Y}};
+            _ -> false
+        end
+    end, Path),
+    
+    %% Draw the path if we have coordinates
+    case Coords of
+        [_,_|_] ->
+            %% Set pen for route
+            wxDC:setPen(DC, wxPen:new(Color, [{width, 3}, {style, ?wxSOLID}])),
+            
+            %% Draw lines between consecutive points
+            draw_path_segments(DC, Coords),
+            
+            %% Draw dots at waypoints
+            wxDC:setBrush(DC, wxBrush:new(Color)),
+            lists:foreach(fun({X, Y}) ->
+                wxDC:drawCircle(DC, {X, Y}, 3)
+            end, Coords);
+        _ ->
+            ok
+    end.
+
+%%--------------------------------------------------------------------
+%% Draw path segments between consecutive points
+%%--------------------------------------------------------------------
+draw_path_segments(_DC, []) -> ok;
+draw_path_segments(_DC, [_]) -> ok;
+draw_path_segments(DC, [{X1, Y1}, {X2, Y2} | Rest]) ->
+    wxDC:drawLine(DC, {X1, Y1}, {X2, Y2}),
+    draw_path_segments(DC, [{X2, Y2} | Rest]).
+
+%%--------------------------------------------------------------------
+%% Safe helper to get coordinates
+%%--------------------------------------------------------------------
+get_location_coordinates_safe(LocationId) when is_list(LocationId) ->
+    try
+        case LocationId of
+            "home_" ++ NumStr ->
+                Num = list_to_integer(NumStr),
+                case ets:lookup(map_data, homes) of
+                    [{homes, Homes}] ->
+                        case lists:filter(fun(H) -> 
+                            maps:get(id, H) == Num 
+                        end, Homes) of
+                            [Home|_] ->
+                                {ok, maps:get(x, Home), maps:get(y, Home)};
+                            _ ->
+                                error
+                        end;
+                    _ ->
+                        error
+                end;
+            "business_" ++ Zone ->
+                case ets:lookup(map_data, businesses) of
+                    [{businesses, Businesses}] ->
+                        ZoneAtom = list_to_atom(Zone),
+                        case lists:filter(fun(B) ->
+                            maps:get(zone, B) == ZoneAtom
+                        end, Businesses) of
+                            [Business|_] ->
+                                {ok, maps:get(x, Business), maps:get(y, Business)};
+                            _ ->
+                                error
+                        end;
+                    _ ->
+                        error
+                end;
+            "junction_" ++ _ ->
+                %% For real junctions, get from map_server
+                case map_server:get_location(LocationId) of
+                    {ok, Location} ->
+                        {ok, Location#location.x, Location#location.y};
+                    _ -> error
+                end;
+            _ ->
+                error
+        end
+    catch
+        _:_ -> error
+    end;
+get_location_coordinates_safe(_) -> error.
+
+%%--------------------------------------------------------------------
+%% Draw enhanced couriers with status indication
+%%--------------------------------------------------------------------
+draw_enhanced_couriers(DC, CourierList) ->
+    lists:foreach(fun(CourierData) ->
+        try
+            {CourierId, PositionInfo} = case CourierData of
+                {Id, Info} -> {Id, Info};
+                _ -> throw(invalid_courier_data)
+            end,
+            
+            %% Extract position safely
+            {X, Y} = case PositionInfo of
+                {PX, PY, _Data} -> {PX, PY};
+                {PX, PY} -> {PX, PY};
+                #{position := #{x := PX, y := PY}} -> {PX, PY};
+                _ -> {500, 400}  % Default position
+            end,
+            
+            %% Get courier status (has_package/no_package)
+            Status = case ets:lookup(courier_status, CourierId) of
+                [{_, S}] -> S;
+                _ -> no_package
+            end,
+            
+            %% Draw courier with status
+            draw_courier_with_status(DC, CourierId, X, Y, Status)
+        catch
+            _:Err ->
+                io:format("Error drawing courier ~p: ~p~n", [CourierData, Err])
+        end
+    end, CourierList).
+
+draw_courier_with_status(DC, CourierId, X, Y, Status) ->
+    try
+        %% Base vehicle color
+        BaseColor = case Status of
+            has_package -> {0, 100, 200};  % Blue when carrying
+            no_package -> {0, 150, 0};     % Green when empty
+            _ -> {100, 100, 100}           % Gray otherwise
+        end,
         
-        %% ID
-        Font = wxFont:new(8, ?wxFONTFAMILY_DEFAULT, ?wxFONTSTYLE_NORMAL, ?wxFONTWEIGHT_NORMAL),
+        %% Draw vehicle body
+        wxDC:setBrush(DC, wxBrush:new(BaseColor)),
+        wxDC:setPen(DC, wxPen:new({0, 0, 0}, [{width, 2}])),
+        wxDC:drawRoundedRectangle(DC, {X - 15, Y - 10, 30, 20}, 5),
+        
+        %% Draw package indicator if carrying
+        case Status of
+            has_package ->
+                %% Draw package box on top of vehicle
+                wxDC:setBrush(DC, wxBrush:new({139, 69, 19})),  % Brown
+                wxDC:setPen(DC, wxPen:new({101, 67, 33}, [{width, 1}])),
+                wxDC:drawRectangle(DC, {X - 8, Y - 18, 16, 8}),
+                
+                %% Add blinking indicator
+                Time = erlang:monotonic_time(millisecond),
+                if (Time rem 1000) < 500 ->
+                    %% Draw red dot when blinking on
+                    wxDC:setBrush(DC, wxBrush:new({255, 0, 0})),
+                    wxDC:setPen(DC, wxPen:new({200, 0, 0}, [{width, 1}])),
+                    wxDC:drawCircle(DC, {X + 12, Y - 5}, 3);
+                true ->
+                    ok
+                end;
+            no_package ->
+                %% Draw empty indicator
+                wxDC:setBrush(DC, wxBrush:new({255, 255, 255})),
+                wxDC:setPen(DC, wxPen:new({0, 150, 0}, [{width, 1}])),
+                wxDC:drawCircle(DC, {X, Y - 15}, 4);
+            _ ->
+                ok
+        end,
+        
+        %% Draw courier ID
+        Font = wxFont:new(8, ?wxFONTFAMILY_DEFAULT, ?wxFONTSTYLE_NORMAL, ?wxFONTWEIGHT_BOLD),
         wxDC:setFont(DC, Font),
         wxDC:setTextForeground(DC, {255, 255, 255}),
         
-        IDStr = atom_to_list(CourierId),
-        ShortID = lists:sublist(IDStr, 1, 6),
-        wxDC:drawText(DC, ShortID, {X - 12, Y - 3})
-    end, CourierList).
+        %% Shorten ID for display
+        IDStr = case CourierId of
+            Atom when is_atom(Atom) -> atom_to_list(Atom);
+            List when is_list(List) -> List;
+            _ -> "?"
+        end,
+        ShortID = case string:tokens(IDStr, "_") of
+            [_Zone, "courier", Num] -> "C" ++ Num;
+            _ -> 
+                case length(IDStr) > 6 of
+                    true -> string:sub_string(IDStr, 1, 6);
+                    false -> IDStr
+                end
+        end,
+        
+        wxDC:drawText(DC, ShortID, {X - 10, Y - 3})
+    catch
+        _:_ -> ok
+    end.
 
 %%--------------------------------------------------------------------
 %% Draw zones
@@ -591,7 +861,7 @@ draw_zones(DC, Width, _Height) ->
 draw_legend(DC, Width) ->
     wxDC:setBrush(DC, wxBrush:new({255, 255, 255, 240})),
     wxDC:setPen(DC, wxPen:new({100, 100, 100})),
-    wxDC:drawRectangle(DC, {Width - 150, 30, 140, 200}),
+    wxDC:drawRectangle(DC, {Width - 150, 30, 140, 250}),
     
     Font = wxFont:new(9, ?wxFONTFAMILY_DEFAULT, ?wxFONTSTYLE_NORMAL, ?wxFONTWEIGHT_NORMAL),
     wxDC:setFont(DC, Font),
@@ -609,27 +879,40 @@ draw_legend(DC, Width) ->
     wxDC:drawRectangle(DC, {Width - 140, 80, 12, 12}),
     wxDC:drawText(DC, "Dist. Center", {Width - 125, 80}),
     
-    %% Courier
+    %% Courier Empty
     wxDC:setBrush(DC, wxBrush:new({0, 150, 0})),
     wxDC:drawRectangle(DC, {Width - 140, 100, 12, 8}),
-    wxDC:drawText(DC, "Courier", {Width - 125, 98}),
+    wxDC:drawText(DC, "Courier (empty)", {Width - 125, 98}),
+    
+    %% Courier with Package
+    wxDC:setBrush(DC, wxBrush:new({0, 100, 200})),
+    wxDC:drawRectangle(DC, {Width - 140, 120, 12, 8}),
+    wxDC:setBrush(DC, wxBrush:new({139, 69, 19})),
+    wxDC:drawRectangle(DC, {Width - 138, 116, 8, 4}),
+    wxDC:drawText(DC, "Courier (package)", {Width - 125, 118}),
     
     %% Orders
     wxDC:setBrush(DC, wxBrush:new({255, 0, 0})),
-    wxDC:drawCircle(DC, {Width - 135, 125}, 5),
-    wxDC:drawText(DC, "Orders", {Width - 125, 120}),
+    wxDC:drawCircle(DC, {Width - 135, 145}, 5),
+    wxDC:drawText(DC, "Orders", {Width - 125, 140}),
     
     %% Roads
     wxDC:setPen(DC, wxPen:new({140, 140, 140}, [{width, 2}])),
-    wxDC:drawLine(DC, {Width - 140, 145}, {Width - 100, 145}),
-    wxDC:setTextForeground(DC, {0, 0, 0}),
-    wxDC:drawText(DC, "Road", {Width - 125, 140}),
-    
-    %% Delivery route
-    wxDC:setPen(DC, wxPen:new({255, 140, 0}, [{width, 2}, {style, ?wxDOT}])),
     wxDC:drawLine(DC, {Width - 140, 165}, {Width - 100, 165}),
     wxDC:setTextForeground(DC, {0, 0, 0}),
-    wxDC:drawText(DC, "Route", {Width - 125, 160}).
+    wxDC:drawText(DC, "Road", {Width - 125, 160}),
+    
+    %% Pickup Route
+    wxDC:setPen(DC, wxPen:new({255, 140, 0}, [{width, 3}, {style, ?wxDOT}])),
+    wxDC:drawLine(DC, {Width - 140, 185}, {Width - 100, 185}),
+    wxDC:setTextForeground(DC, {0, 0, 0}),
+    wxDC:drawText(DC, "Pickup Route", {Width - 125, 180}),
+    
+    %% Delivery Route
+    wxDC:setPen(DC, wxPen:new({0, 200, 0}, [{width, 3}, {style, ?wxDOT}])),
+    wxDC:drawLine(DC, {Width - 140, 205}, {Width - 100, 205}),
+    wxDC:setTextForeground(DC, {0, 0, 0}),
+    wxDC:drawText(DC, "Delivery Route", {Width - 125, 200}).
 
 %%--------------------------------------------------------------------
 %% Initialize log panel
@@ -715,13 +998,85 @@ handle_cast({stop_visualization}, State) ->
     io:format("Visualization Server: Stopping visualization~n"),
     ets:delete_all_objects(courier_positions),
     ets:delete_all_objects(house_orders),
+    ets:delete_all_objects(courier_routes),
+    ets:delete_all_objects(courier_status),
     wxPanel:refresh(State#state.map_panel),
     update_status_bar(State#state.frame, "System: STOPPED", 0),
     log_message(info, "System", "Visualization stopped"),
     {noreply, State};
 
-handle_cast({update_courier_position, CourierId, Position}, State) ->
-    ets:insert(courier_positions, {CourierId, Position}),
+handle_cast({update_courier_position, CourierId, PositionData}, State) ->
+    %% Extract position from the data
+    Position = maps:get(position, PositionData, #{x => 0, y => 0}),
+    X = maps:get(x, Position, 0),
+    Y = maps:get(y, Position, 0),
+    
+    %% Store the position with animation data
+    CurrentTime = erlang:monotonic_time(millisecond),
+    
+    %% Check if we need to create smooth animation
+    case ets:lookup(courier_positions, CourierId) of
+        [{_, {OldX, OldY, _}}] ->
+            %% Create animation from old to new position
+            ets:insert(courier_animations, {CourierId, #{
+                from => {OldX, OldY},
+                to => {X, Y},
+                start_time => CurrentTime,
+                duration => 1000  % 1 second animation
+            }});
+        _ ->
+            ok
+    end,
+    
+    ets:insert(courier_positions, {CourierId, {X, Y, PositionData}}),
+    
+    %% Log the update
+    Progress = maps:get(progress, PositionData, 0),
+    Speed = maps:get(speed, PositionData, 0),
+    LogMsg = io_lib:format("Courier ~s: Position (~p,~p), Progress: ~.1f%, Speed: ~p km/h", 
+                           [CourierId, X, Y, Progress * 100, Speed]),
+    add_log_entry(State#state.log_panel, info, "Movement", LogMsg),
+    
+    wxPanel:refresh(State#state.map_panel),
+    {noreply, State};
+
+handle_cast({set_courier_route, CourierId, RouteData}, State) ->
+    %% Store the route for visualization
+    ets:insert(courier_routes, {CourierId, RouteData}),
+    
+    %% Log route information
+    Type = maps:get(type, RouteData, unknown),
+    Path = maps:get(path, RouteData, []),
+    Distance = maps:get(total_distance, RouteData, 0),
+    EstTime = maps:get(estimated_time, RouteData, 0),
+    
+    TypeStr = case Type of
+        pickup -> "Pickup";
+        delivery -> "Delivery";
+        _ -> "Unknown"
+    end,
+    
+    LogMsg = io_lib:format("Courier ~s: New ~s route with ~p waypoints, ~pm distance, ETA: ~ps", 
+                           [CourierId, TypeStr, length(Path), Distance, EstTime]),
+    add_log_entry(State#state.log_panel, success, "Route", LogMsg),
+    
+    wxPanel:refresh(State#state.map_panel),
+    {noreply, State};
+
+handle_cast({update_courier_status, CourierId, Status}, State) ->
+    %% Store courier package status
+    ets:insert(courier_status, {CourierId, Status}),
+    
+    %% Log status change
+    StatusStr = case Status of
+        has_package -> "Carrying package";
+        no_package -> "Empty";
+        _ -> "Unknown"
+    end,
+    
+    LogMsg = io_lib:format("Courier ~s: Status changed to ~s", [CourierId, StatusStr]),
+    add_log_entry(State#state.log_panel, info, "Status", LogMsg),
+    
     wxPanel:refresh(State#state.map_panel),
     {noreply, State};
 
@@ -741,6 +1096,16 @@ handle_cast({load_map, MapModuleName}, State) ->
     update_status_bar(State#state.frame, io_lib:format("Map: ~s", [MapModuleName]), 1),
     log_message(info, "Map", io_lib:format("Loaded map: ~s", [MapModuleName])),
     {noreply, State#state{current_map = MapModuleName}};
+	
+handle_cast({package_delivered, HouseId}, State) ->
+    HouseKey = list_to_atom("house_" ++ HouseId),
+    case ets:lookup(house_orders, HouseKey) of
+        [{_, Count}] when Count > 0 ->
+            ets:insert(house_orders, {HouseKey, Count - 1});
+        _ -> ok
+    end,
+    wxPanel:refresh(State#state.map_panel),
+    {noreply, State};	
 
 handle_cast(_Request, State) ->
     {noreply, State}.
@@ -777,3 +1142,7 @@ update_status_bar(Frame, Text, Column) ->
         StatusBar -> 
             wxStatusBar:setStatusText(StatusBar, Text, [{number, Column}])
     end.
+
+%% Helper function - minimum of two numbers
+min(A, B) when A < B -> A;
+min(_, B) -> B.

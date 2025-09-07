@@ -6,6 +6,7 @@
 
 -include_lib("wx/include/wx.hrl").
 -include("header.hrl").
+-include("network_const.hrl").
 
 -export([start/0]).
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2, handle_event/2, 
@@ -38,7 +39,7 @@
     % Zone tracking
     zone_status = #{},  % Track zone statuses
     % Node tracking
-    control_node = 'control@127.0.0.1',  % Fixed control node name
+    control_node = ?CTRL_NODE,  % Fixed control node name
     visualization_node = node()  % Current node
 }).
 
@@ -246,7 +247,7 @@ init([Wx]) ->
         simulation_state = stopped,
         current_map = map_data_100,
         zone_status = #{},
-        control_node = 'control@127.0.0.1',
+        control_node = ?CTRL_NODE,
         visualization_node = node()
     }}.
 
@@ -369,21 +370,41 @@ handle_event(_Event, State) ->
 %% @private
 %% @doc Control handlers
 %%--------------------------------------------------------------------
-handle_start(State = #state{current_map = MapModule, control_node = ControlNode}) ->
-    io:format("Dashboard: Starting simulation with map ~p on remote control~n", [MapModule]),
-    %% Remote cast to control center
-    gen_server:cast({control_center, ControlNode}, {start_simulation, MapModule}),
-    wxChoice:enable(State#state.map_choice, [{enable, false}]),
-    
-    MapLabel = get_map_label(MapModule),
-    wxFrame:setStatusText(State#state.frame, 
-                         io_lib:format("System: RUNNING | Map: ~s", [MapLabel])),
-    
-    State#state{simulation_state = running}.
+handle_start(State = #state{current_map = MapModule, control_node = ControlNode, 
+                            simulation_state = CurrentState}) ->
+    case CurrentState of
+        stopped ->
+            %% Fresh start
+            io:format("Dashboard: Starting NEW simulation with map ~p~n", [MapModule]),
+            gen_server:cast({control_center, ControlNode}, {start_simulation, MapModule}),
+            wxChoice:enable(State#state.map_choice, [{enable, false}]),
+            
+            MapLabel = get_map_label(MapModule),
+            wxFrame:setStatusText(State#state.frame, 
+                                 io_lib:format("System: RUNNING | Map: ~s", [MapLabel])),
+            
+            State#state{simulation_state = running};
+        
+        paused ->
+            %% Resume from pause
+            io:format("Dashboard: Resuming simulation~n"),
+            gen_server:cast({control_center, ControlNode}, {resume_simulation}),
+            
+            MapLabel = get_map_label(State#state.current_map),
+            wxFrame:setStatusText(State#state.frame, 
+                                 io_lib:format("System: RUNNING | Map: ~s", [MapLabel])),
+            
+            State#state{simulation_state = running};
+        
+        running ->
+            %% Already running
+            io:format("Dashboard: Simulation already running~n"),
+            State
+    end.
 
+%% The pause handler stays the same:
 handle_pause(State = #state{control_node = ControlNode}) ->
-    io:format("Dashboard: Pausing simulation via remote control~n"),
-    %% Remote cast to control center
+    io:format("Dashboard: Pausing simulation~n"),
     gen_server:cast({control_center, ControlNode}, {pause_simulation}),
     
     MapLabel = get_map_label(State#state.current_map),
@@ -391,9 +412,9 @@ handle_pause(State = #state{control_node = ControlNode}) ->
                          io_lib:format("System: PAUSED | Map: ~s", [MapLabel])),
     State#state{simulation_state = paused}.
 
+%% The stop handler stays the same:
 handle_stop(State = #state{control_node = ControlNode}) ->
-    io:format("Dashboard: Stopping simulation via remote control~n"),
-    %% Remote cast to control center
+    io:format("Dashboard: Stopping simulation completely~n"),
     gen_server:cast({control_center, ControlNode}, {stop_simulation}),
     wxChoice:enable(State#state.map_choice, [{enable, true}]),
     
@@ -421,43 +442,39 @@ handle_cast(_Msg, State) ->
 %% @doc Handle info messages - NEW handler for state collector updates
 %%--------------------------------------------------------------------
 
-handle_info({state_update, UpdateType, Data}, State = #state{zones_list = List, zone_status = ZoneStatusMap}) ->
+handle_info({state_update, UpdateType, Data}, State = #state{zones_list = List, 
+                                                              zone_status = ZoneStatusMap,
+                                                              stats_labels = StatsLabels}) ->
     case UpdateType of
         <<"zone_update">> ->
-            %% Extract zone data from the Data map
+            %% Extract zone data
             Zone = case maps:get(<<"zone">>, Data, maps:get(zone, Data, undefined)) of
-                undefined ->
-                    maps:get(zone, Data, undefined);
-                ZoneBin when is_binary(ZoneBin) ->
-                    binary_to_atom(ZoneBin, utf8);
-                ZoneAtom when is_atom(ZoneAtom) ->
-                    ZoneAtom;
-                ZoneStr when is_list(ZoneStr) ->
-                    list_to_atom(ZoneStr);
-                "north" -> north;  %% תיקון: טיפול ישיר ב-"north"
+                undefined -> maps:get(zone, Data, undefined);
+                ZoneBin when is_binary(ZoneBin) -> binary_to_atom(ZoneBin, utf8);
+                ZoneAtom when is_atom(ZoneAtom) -> ZoneAtom;
+                ZoneStr when is_list(ZoneStr) -> list_to_atom(ZoneStr);
+                "north" -> north;
                 "center" -> center;
                 "south" -> south
             end,
             
             Status = case maps:get(<<"status">>, Data, maps:get(status, Data, undefined)) of
-                StatusBin when is_binary(StatusBin) ->
-                    binary_to_atom(StatusBin, utf8);
-                StatusAtom when is_atom(StatusAtom) ->
-                    StatusAtom;
-                _ ->
-                    unknown
+                StatusBin when is_binary(StatusBin) -> binary_to_atom(StatusBin, utf8);
+                StatusAtom when is_atom(StatusAtom) -> StatusAtom;
+                _ -> unknown
             end,
             
-            %% Get courier and delivery counts
+            %% Get ALL the stats from the zone update
             Couriers = maps:get(<<"couriers">>, Data, maps:get(couriers, Data, 0)),
             Deliveries = maps:get(<<"deliveries">>, Data, maps:get(deliveries, Data, 0)),
+            ActiveDeliveries = maps:get(<<"active_deliveries">>, Data, maps:get(active_deliveries, Data, 0)),
+            WaitingPackages = maps:get(<<"waiting_packages">>, Data, maps:get(waiting_packages, Data, 0)),
+            TotalOrders = maps:get(<<"total_orders">>, Data, maps:get(total_orders, Data, 0)),
             
-            %% Update the GUI
+            %% Update zone display
             case Zone of
-                undefined ->
-                    {noreply, State};
+                undefined -> {noreply, State};
                 _ ->
-                    %% Determine zone index
                     Index = case Zone of
                         north -> 0;
                         <<"north">> -> 0;
@@ -484,55 +501,68 @@ handle_info({state_update, UpdateType, Data}, State = #state{zones_list = List, 
                                 _ -> "Unknown"
                             end,
                             
-                            %% Update display
+                            %% Update zone list display
                             wxListCtrl:setItem(List, Index, 0, ZoneName),
                             wxListCtrl:setItem(List, Index, 1, StatusText),
                             wxListCtrl:setItem(List, Index, 2, integer_to_list(Couriers)),
                             wxListCtrl:setItem(List, Index, 3, integer_to_list(Deliveries)),
                             
-                            %% Set color based on status
                             Color = case Status of
-                                live -> {0, 150, 0};     % Green
-                                down -> {200, 0, 0};      % Red
-                                offline -> {128, 128, 128}; % Gray
-                                _ -> {128, 128, 128}      % Gray
+                                live -> {0, 150, 0};
+                                down -> {200, 0, 0};
+                                offline -> {128, 128, 128};
+                                _ -> {128, 128, 128}
                             end,
                             wxListCtrl:setItemTextColour(List, Index, Color),
                             
-                            %% Update zone status map
-                            NewZoneStatusMap = maps:put(Zone, {Status, Couriers, Deliveries}, ZoneStatusMap),
+                            %% Update zone status map with ALL data
+                            NewZoneStatusMap = maps:put(Zone, {Status, Couriers, Deliveries, ActiveDeliveries}, ZoneStatusMap),
                             
-                            %% Calculate and update total statistics
-                            ConnectedZones = maps:fold(fun(_, {S, _, _}, Acc) ->
-                                case S of
-                                    live -> Acc + 1;
-                                    _ -> Acc
-                                end
-                            end, 0, NewZoneStatusMap),
+                            %% Calculate TOTALS from all zones
+                            {TotalZones, TotalCouriers, TotalActive, TotalDeliveries, TotalFailed} = 
+                                maps:fold(fun(_ZoneKey, {ZStatus, ZCouriers, ZDeliveries, ZActive}, 
+                                             {AccZones, AccCouriers, AccActive, AccDeliveries, AccFailed}) ->
+                                    case ZStatus of
+                                        live -> 
+                                            {AccZones + 1, AccCouriers + ZCouriers, AccActive + ZActive, 
+                                             AccDeliveries + ZDeliveries, AccFailed};
+                                        _ -> 
+                                            {AccZones, AccCouriers, AccActive, AccDeliveries, AccFailed}
+                                    end
+                                end, {0, 0, 0, 0, 0}, NewZoneStatusMap),
                             
-                            update_label(State#state.stats_labels, zones_label, integer_to_list(ConnectedZones)),
+                            %% UPDATE THE STATS LABELS!
+                            update_label(StatsLabels, zones_label, integer_to_list(TotalZones)),
+                            update_label(StatsLabels, couriers_label, integer_to_list(TotalCouriers)),
+                            update_label(StatsLabels, active_label, integer_to_list(TotalActive)),
+                            update_label(StatsLabels, deliveries_label, integer_to_list(TotalDeliveries)),
+                            update_label(StatsLabels, failed_label, integer_to_list(TotalFailed)),
                             
                             {noreply, State#state{
                                 zone_status = NewZoneStatusMap,
-                                total_zones = ConnectedZones
+                                total_zones = TotalZones,
+                                total_couriers = TotalCouriers,
+                                active_couriers = TotalActive,
+                                total_deliveries = TotalDeliveries,
+                                failed_deliveries = TotalFailed
                             }}
                     end
             end;
             
         <<"stats_update">> ->
-            %% Handle statistics updates
+            %% Direct stats update from control center
             TotalZones = maps:get(total_zones, Data, State#state.total_zones),
             TotalCouriers = maps:get(total_couriers, Data, State#state.total_couriers),
             ActiveCouriers = maps:get(active_couriers, Data, State#state.active_couriers),
             TotalDeliveries = maps:get(total_deliveries, Data, State#state.total_deliveries),
             FailedDeliveries = maps:get(failed_deliveries, Data, State#state.failed_deliveries),
             
-            %% Update labels
-            update_label(State#state.stats_labels, zones_label, integer_to_list(TotalZones)),
-            update_label(State#state.stats_labels, couriers_label, integer_to_list(TotalCouriers)),
-            update_label(State#state.stats_labels, active_label, integer_to_list(ActiveCouriers)),
-            update_label(State#state.stats_labels, deliveries_label, integer_to_list(TotalDeliveries)),
-            update_label(State#state.stats_labels, failed_label, integer_to_list(FailedDeliveries)),
+            %% Update labels directly
+            update_label(StatsLabels, zones_label, integer_to_list(TotalZones)),
+            update_label(StatsLabels, couriers_label, integer_to_list(TotalCouriers)),
+            update_label(StatsLabels, active_label, integer_to_list(ActiveCouriers)),
+            update_label(StatsLabels, deliveries_label, integer_to_list(TotalDeliveries)),
+            update_label(StatsLabels, failed_label, integer_to_list(FailedDeliveries)),
             
             {noreply, State#state{
                 total_zones = TotalZones,
@@ -543,7 +573,6 @@ handle_info({state_update, UpdateType, Data}, State = #state{zones_list = List, 
             }};
             
         _ ->
-            %% Ignore other update types
             {noreply, State}
     end;
 

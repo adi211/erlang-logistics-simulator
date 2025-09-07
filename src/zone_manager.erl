@@ -6,12 +6,11 @@
 -behaviour(gen_statem).
 -include("network_const.hrl").
 
--include("header.hrl").
 -include("map_records.hrl").
 
 
 %% API
--export([start/1, new_package/2]).
+-export([start/0, new_package/2]).
 
 %% gen_statem callbacks
 -export([callback_mode/0, init/1, handle_event/4, terminate/3, code_change/4]).
@@ -48,20 +47,21 @@
 %% API
 %%====================================================================
 
-start(ControlNode) ->
-    gen_statem:start_link({local, zone_manager}, ?MODULE, [ControlNode], []).
+start() ->
+    gen_statem:start_link({local, zone_manager}, ?MODULE, [], []).
 
 new_package(Zone, PackageId) ->
     io:format("API: Sending new_package ~p to zone ~p~n", [PackageId, Zone]),
     gen_statem:cast(zone_manager, {new_package, PackageId}).
 
 %%====================================================================
-%% gen_statem callbacks
+%% gen_statem callbacks 
 %%====================================================================
 
 callback_mode() -> handle_event_function.
 
-init([ControlNode]) ->
+init([]) ->
+    ControlNode = ?CTRL_NODE,
     io:format("Zone Manager ~p: Starting up as FSM with control node ~p...~n", [node(), ControlNode]),
     
     %% Determine zone configuration based on node name

@@ -55,7 +55,7 @@ new_package(Zone, PackageId) ->
     gen_statem:cast(zone_manager, {new_package, PackageId}).
 
 %%====================================================================
-%% gen_statem callbacks
+%% gen_statem callbacks 
 %%====================================================================
 
 callback_mode() -> handle_event_function.

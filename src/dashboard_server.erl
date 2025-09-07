@@ -19,23 +19,18 @@
     start_btn,
     pause_btn,
     stop_btn,
-    deploy_btn,
-    remove_btn,
-    courier_input,
+    % Courier configuration inputs
+    north_input,
+    center_input,
+    south_input,
+    % Other controls
     map_choice,
     load_slider,
     % Display
-    stats_labels,
     zones_list,
     % State
     simulation_state = stopped,
     current_map = map_data_100,
-    % Stats
-    total_zones = 0,
-    total_couriers = 0,
-    active_couriers = 0,
-    total_deliveries = 0,
-    failed_deliveries = 0,
     % Zone tracking
     zone_status = #{},  % Track zone statuses
     % Node tracking
@@ -57,7 +52,7 @@ start() ->
 init([Wx]) ->
     %% Create frame
     Frame = wxFrame:new(Wx, -1, "Logistics Control Center", 
-                       [{size, {1000, 700}}]),
+                       [{size, {1000, 1000}}]),
     
     %% Create panel
     Panel = wxPanel:new(Frame),
@@ -111,27 +106,53 @@ init([Wx]) ->
     
     wxSizer:add(MainSizer, ControlSizer, [{flag, ?wxEXPAND bor ?wxALL}, {border, 10}]),
     
-    %% === DYNAMIC CONTROLS ===
-    DynamicBox = wxStaticBox:new(Panel, ?wxID_ANY, "Dynamic Controls"),
-    DynamicSizer = wxStaticBoxSizer:new(DynamicBox, ?wxVERTICAL),
+    %% === COURIER CONFIGURATION (Only editable when stopped) ===
+    CourierBox = wxStaticBox:new(Panel, ?wxID_ANY, "Courier Configuration (Set before START)"),
+    CourierSizer = wxStaticBoxSizer:new(CourierBox, ?wxVERTICAL),
     
-    %% Courier management
-    CourierRow = wxBoxSizer:new(?wxHORIZONTAL),
+    %% Courier configuration grid
+    CourierGrid = wxFlexGridSizer:new(3, 3, 5, 10),
     
-    CourierLabel = wxStaticText:new(Panel, ?wxID_ANY, "Couriers: "),
-    CourierInput = wxTextCtrl:new(Panel, ?wxID_ANY, [{value, "5"}, {size, {60, -1}}]),
-    DeployBtn = wxButton:new(Panel, 1004, [{label, "Deploy"}, {size, {80, 30}}]),
-    RemoveBtn = wxButton:new(Panel, 1005, [{label, "Remove"}, {size, {80, 30}}]),
+    %% North Zone
+    NorthLabel = wxStaticText:new(Panel, ?wxID_ANY, "North Zone Couriers: "),
+    NorthInput = wxTextCtrl:new(Panel, 2001, [{value, "5"}, {size, {60, -1}}]),
+    wxFlexGridSizer:add(CourierGrid, NorthLabel, [{flag, ?wxALIGN_CENTER_VERTICAL}]),
+    wxFlexGridSizer:add(CourierGrid, NorthInput, [{flag, ?wxEXPAND}]),
+    wxFlexGridSizer:add(CourierGrid, wxStaticText:new(Panel, ?wxID_ANY, "(1-20)"), 
+                        [{flag, ?wxALIGN_CENTER_VERTICAL}]),
     
-    wxButton:connect(DeployBtn, command_button_clicked),
-    wxButton:connect(RemoveBtn, command_button_clicked),
+    %% Center Zone  
+    CenterLabel = wxStaticText:new(Panel, ?wxID_ANY, "Center Zone Couriers: "),
+    CenterInput = wxTextCtrl:new(Panel, 2002, [{value, "5"}, {size, {60, -1}}]),
+    wxFlexGridSizer:add(CourierGrid, CenterLabel, [{flag, ?wxALIGN_CENTER_VERTICAL}]),
+    wxFlexGridSizer:add(CourierGrid, CenterInput, [{flag, ?wxEXPAND}]),
+    wxFlexGridSizer:add(CourierGrid, wxStaticText:new(Panel, ?wxID_ANY, "(1-20)"), 
+                        [{flag, ?wxALIGN_CENTER_VERTICAL}]),
     
-    wxSizer:add(CourierRow, CourierLabel, [{flag, ?wxALL bor ?wxALIGN_CENTER_VERTICAL}, {border, 5}]),
-    wxSizer:add(CourierRow, CourierInput, [{flag, ?wxALL}, {border, 5}]),
-    wxSizer:add(CourierRow, DeployBtn, [{flag, ?wxALL}, {border, 5}]),
-    wxSizer:add(CourierRow, RemoveBtn, [{flag, ?wxALL}, {border, 5}]),
+    %% South Zone
+    SouthLabel = wxStaticText:new(Panel, ?wxID_ANY, "South Zone Couriers: "),
+    SouthInput = wxTextCtrl:new(Panel, 2003, [{value, "5"}, {size, {60, -1}}]),
+    wxFlexGridSizer:add(CourierGrid, SouthLabel, [{flag, ?wxALIGN_CENTER_VERTICAL}]),
+    wxFlexGridSizer:add(CourierGrid, SouthInput, [{flag, ?wxEXPAND}]),
+    wxFlexGridSizer:add(CourierGrid, wxStaticText:new(Panel, ?wxID_ANY, "(1-20)"), 
+                        [{flag, ?wxALIGN_CENTER_VERTICAL}]),
     
-    %% Order load
+    wxSizer:add(CourierSizer, CourierGrid, [{flag, ?wxALL bor ?wxEXPAND}, {border, 10}]),
+    
+    %% Configuration note
+    Note = wxStaticText:new(Panel, ?wxID_ANY, 
+                           "Note: Courier configuration can only be changed when simulation is STOPPED"),
+    NoteFont = wxFont:new(9, ?wxFONTFAMILY_DEFAULT, ?wxFONTSTYLE_ITALIC, ?wxFONTWEIGHT_NORMAL),
+    wxStaticText:setFont(Note, NoteFont),
+    wxStaticText:setForegroundColour(Note, {100, 100, 100}),
+    wxSizer:add(CourierSizer, Note, [{flag, ?wxALL}, {border, 5}]),
+    
+    wxSizer:add(MainSizer, CourierSizer, [{flag, ?wxEXPAND bor ?wxALL}, {border, 10}]),
+    
+    %% === ORDER LOAD CONTROL ===
+    LoadBox = wxStaticBox:new(Panel, ?wxID_ANY, "Dynamic Controls"),
+    LoadSizer = wxStaticBoxSizer:new(LoadBox, ?wxVERTICAL),
+    
     LoadRow = wxBoxSizer:new(?wxHORIZONTAL),
     
     LoadLabel = wxStaticText:new(Panel, ?wxID_ANY, "Order Load: "),
@@ -146,18 +167,9 @@ init([Wx]) ->
     wxSizer:add(LoadRow, LoadSlider, [{flag, ?wxALL}, {border, 5}]),
     wxSizer:add(LoadRow, LoadText, [{flag, ?wxALL bor ?wxALIGN_CENTER_VERTICAL}, {border, 5}]),
     
-    wxSizer:add(DynamicSizer, CourierRow, [{flag, ?wxEXPAND}]),
-    wxSizer:add(DynamicSizer, LoadRow, [{flag, ?wxEXPAND}]),
+    wxSizer:add(LoadSizer, LoadRow, [{flag, ?wxEXPAND}]),
     
-    wxSizer:add(MainSizer, DynamicSizer, [{flag, ?wxEXPAND bor ?wxALL}, {border, 10}]),
-    
-    %% === STATISTICS ===
-    StatsBox = wxStaticBox:new(Panel, ?wxID_ANY, "Statistics"),
-    StatsSizer = wxStaticBoxSizer:new(StatsBox, ?wxHORIZONTAL),
-    
-    StatsLabels = create_stats_labels(Panel, StatsSizer),
-    
-    wxSizer:add(MainSizer, StatsSizer, [{flag, ?wxEXPAND bor ?wxALL}, {border, 10}]),
+    wxSizer:add(MainSizer, LoadSizer, [{flag, ?wxEXPAND bor ?wxALL}, {border, 10}]),
     
     %% === ZONE LIST ===
     ZonesBox = wxStaticBox:new(Panel, ?wxID_ANY, "Zones Status"),
@@ -166,8 +178,6 @@ init([Wx]) ->
     ZonesList = wxListCtrl:new(Panel, [{style, ?wxLC_REPORT}]),
     wxListCtrl:insertColumn(ZonesList, 0, "Node/Zone", [{width, 250}]),
     wxListCtrl:insertColumn(ZonesList, 1, "Status", [{width, 100}]),
-    wxListCtrl:insertColumn(ZonesList, 2, "Couriers", [{width, 100}]),
-    wxListCtrl:insertColumn(ZonesList, 3, "Deliveries", [{width, 100}]),
     
     %% Add fixed zone rows (0-2 for zones, 3-4 for control/viz)
     lists:foreach(fun(Index) ->
@@ -177,8 +187,6 @@ init([Wx]) ->
     %% Initialize zone display
     wxListCtrl:setItem(ZonesList, 0, 0, "North Zone"),
     wxListCtrl:setItem(ZonesList, 0, 1, "Not Connected"),
-    wxListCtrl:setItem(ZonesList, 0, 2, "0"),
-    wxListCtrl:setItem(ZonesList, 0, 3, "0"),
     wxListCtrl:setItemTextColour(ZonesList, 0, {128, 128, 128}),
     
     wxListCtrl:setItem(ZonesList, 1, 0, "Center Zone"),
@@ -237,12 +245,11 @@ init([Wx]) ->
         start_btn = StartBtn,
         pause_btn = PauseBtn,
         stop_btn = StopBtn,
-        deploy_btn = DeployBtn,
-        remove_btn = RemoveBtn,
-        courier_input = CourierInput,
+        north_input = NorthInput,
+        center_input = CenterInput,
+        south_input = SouthInput,
         map_choice = MapChoice,
         load_slider = LoadSlider,
-        stats_labels = StatsLabels,
         zones_list = ZonesList,
         simulation_state = stopped,
         current_map = map_data_100,
@@ -253,39 +260,9 @@ init([Wx]) ->
 
 %%--------------------------------------------------------------------
 %% @private
-%% @doc Create statistics labels
-%%--------------------------------------------------------------------
-create_stats_labels(Panel, Sizer) ->
-    Font = wxFont:new(10, ?wxFONTFAMILY_DEFAULT, ?wxFONTSTYLE_NORMAL, ?wxFONTWEIGHT_NORMAL),
-    BoldFont = wxFont:new(10, ?wxFONTFAMILY_DEFAULT, ?wxFONTSTYLE_NORMAL, ?wxFONTWEIGHT_BOLD),
-    
-    Stats = [
-        {zones_label, "Zones: ", "0"},
-        {couriers_label, "Couriers: ", "0"},
-        {active_label, "Active: ", "0"},
-        {deliveries_label, "Deliveries: ", "0"},
-        {failed_label, "Failed: ", "0"}
-    ],
-    
-    lists:map(fun({Tag, Text, Initial}) ->
-        Label = wxStaticText:new(Panel, ?wxID_ANY, Text),
-        wxStaticText:setFont(Label, Font),
-        Value = wxStaticText:new(Panel, ?wxID_ANY, Initial),
-        wxStaticText:setFont(Value, BoldFont),
-        wxStaticText:setForegroundColour(Value, {0, 100, 200}),
-        
-        wxSizer:add(Sizer, Label, [{flag, ?wxALL bor ?wxALIGN_CENTER_VERTICAL}, {border, 5}]),
-        wxSizer:add(Sizer, Value, [{flag, ?wxALL bor ?wxALIGN_CENTER_VERTICAL}, {border, 5}]),
-        
-        {Tag, Value}
-    end, Stats).
-
-%%--------------------------------------------------------------------
-%% @private
 %% @doc Handle events
 %%--------------------------------------------------------------------
-handle_event(#wx{id = Id, event = #wxCommand{type = command_button_clicked}}, 
-             State = #state{courier_input = CourierInput, control_node = ControlNode}) ->
+handle_event(#wx{id = Id, event = #wxCommand{type = command_button_clicked}}, State) ->
     NewState = case Id of
         1001 -> % Start
             handle_start(State);
@@ -295,22 +272,6 @@ handle_event(#wx{id = Id, event = #wxCommand{type = command_button_clicked}},
             
         1003 -> % Stop
             handle_stop(State);
-            
-        1004 -> % Deploy
-            Value = wxTextCtrl:getValue(CourierInput),
-            Num = try list_to_integer(Value) catch _:_ -> 5 end,
-            io:format("Dashboard: Deploying ~p couriers to remote control center~n", [Num]),
-            %% Remote cast to control center
-            gen_server:cast({control_center, ControlNode}, {deploy_couriers, Num}),
-            State;
-            
-        1005 -> % Remove
-            Value = wxTextCtrl:getValue(CourierInput),
-            Num = try list_to_integer(Value) catch _:_ -> 5 end,
-            io:format("Dashboard: Removing ~p couriers via remote control center~n", [Num]),
-            %% Remote cast to control center
-            gen_server:cast({control_center, ControlNode}, {remove_couriers, Num}),
-            State;
             
         _ ->
             State
@@ -371,17 +332,45 @@ handle_event(_Event, State) ->
 %% @doc Control handlers
 %%--------------------------------------------------------------------
 handle_start(State = #state{current_map = MapModule, control_node = ControlNode, 
-                            simulation_state = CurrentState}) ->
+                            simulation_state = CurrentState,
+                            north_input = NorthInput,
+                            center_input = CenterInput,
+                            south_input = SouthInput}) ->
     case CurrentState of
         stopped ->
-            %% Fresh start
-            io:format("Dashboard: Starting NEW simulation with map ~p~n", [MapModule]),
-            gen_server:cast({control_center, ControlNode}, {start_simulation, MapModule}),
+            %% Read courier configuration values
+            NorthCouriers = get_courier_count(NorthInput),
+            CenterCouriers = get_courier_count(CenterInput),
+            SouthCouriers = get_courier_count(SouthInput),
+            
+            %% Lock the input fields
+            wxTextCtrl:enable(NorthInput, [{enable, false}]),
+            wxTextCtrl:enable(CenterInput, [{enable, false}]),
+            wxTextCtrl:enable(SouthInput, [{enable, false}]),
+            
+            %% Create configuration with courier counts per zone
+            Config = #{
+                courier_config => #{
+                    north => NorthCouriers,
+                    center => CenterCouriers,
+                    south => SouthCouriers
+                },
+                map_module => MapModule,
+                num_households_per_zone => 10
+            },
+            
+            io:format("Dashboard: Starting simulation with courier config: North=~p, Center=~p, South=~p~n", 
+                     [NorthCouriers, CenterCouriers, SouthCouriers]),
+            
+            %% Send configuration to control center
+            gen_server:cast({control_center, ControlNode}, {start_simulation_with_config, Config}),
+            
             wxChoice:enable(State#state.map_choice, [{enable, false}]),
             
             MapLabel = get_map_label(MapModule),
             wxFrame:setStatusText(State#state.frame, 
-                                 io_lib:format("System: RUNNING | Map: ~s", [MapLabel])),
+                                 io_lib:format("System: RUNNING | Map: ~s | Couriers: N=~p C=~p S=~p", 
+                                              [MapLabel, NorthCouriers, CenterCouriers, SouthCouriers])),
             
             State#state{simulation_state = running};
         
@@ -402,7 +391,6 @@ handle_start(State = #state{current_map = MapModule, control_node = ControlNode,
             State
     end.
 
-%% The pause handler stays the same:
 handle_pause(State = #state{control_node = ControlNode}) ->
     io:format("Dashboard: Pausing simulation~n"),
     gen_server:cast({control_center, ControlNode}, {pause_simulation}),
@@ -412,9 +400,17 @@ handle_pause(State = #state{control_node = ControlNode}) ->
                          io_lib:format("System: PAUSED | Map: ~s", [MapLabel])),
     State#state{simulation_state = paused}.
 
-%% The stop handler stays the same:
-handle_stop(State = #state{control_node = ControlNode}) ->
+handle_stop(State = #state{control_node = ControlNode,
+                           north_input = NorthInput,
+                           center_input = CenterInput,
+                           south_input = SouthInput}) ->
     io:format("Dashboard: Stopping simulation completely~n"),
+    
+    %% Unlock the courier input fields
+    wxTextCtrl:enable(NorthInput, [{enable, true}]),
+    wxTextCtrl:enable(CenterInput, [{enable, true}]),
+    wxTextCtrl:enable(SouthInput, [{enable, true}]),
+    
     gen_server:cast({control_center, ControlNode}, {stop_simulation}),
     wxChoice:enable(State#state.map_choice, [{enable, true}]),
     
@@ -432,148 +428,71 @@ handle_call(_Request, _From, State) ->
 
 %%--------------------------------------------------------------------
 %% @private
-%% @doc Handle cast messages - cleaned up, no longer used for direct updates
+%% @doc Handle cast messages
 %%--------------------------------------------------------------------
 handle_cast(_Msg, State) ->
     {noreply, State}.
 
 %%--------------------------------------------------------------------
 %% @private
-%% @doc Handle info messages - NEW handler for state collector updates
+%% @doc Handle info messages
 %%--------------------------------------------------------------------
-
-handle_info({state_update, UpdateType, Data}, State = #state{zones_list = List, 
-                                                              zone_status = ZoneStatusMap,
-                                                              stats_labels = StatsLabels}) ->
-    case UpdateType of
-        <<"zone_update">> ->
-            %% Extract zone data
-            Zone = case maps:get(<<"zone">>, Data, maps:get(zone, Data, undefined)) of
-                undefined -> maps:get(zone, Data, undefined);
-                ZoneBin when is_binary(ZoneBin) -> binary_to_atom(ZoneBin, utf8);
-                ZoneAtom when is_atom(ZoneAtom) -> ZoneAtom;
-                ZoneStr when is_list(ZoneStr) -> list_to_atom(ZoneStr);
-                "north" -> north;
-                "center" -> center;
-                "south" -> south
+handle_info({state_update, <<"zone_update">>, Data}, State = #state{zones_list = List}) ->
+    %% Extract zone data
+    Zone = case maps:get(<<"zone">>, Data, maps:get(zone, Data, undefined)) of
+        "north" -> north;
+        "center" -> center;
+        "south" -> south;
+        <<"north">> -> north;
+        <<"center">> -> center;
+        <<"south">> -> south;
+        ZoneAtom when is_atom(ZoneAtom) -> ZoneAtom;
+        _ -> undefined
+    end,
+    
+    case Zone of
+        undefined -> {noreply, State};
+        _ ->
+            Index = case Zone of
+                north -> 0;
+                center -> 1;
+                south -> 2;
+                _ -> -1
             end,
             
-            Status = case maps:get(<<"status">>, Data, maps:get(status, Data, undefined)) of
-                StatusBin when is_binary(StatusBin) -> binary_to_atom(StatusBin, utf8);
-                StatusAtom when is_atom(StatusAtom) -> StatusAtom;
-                _ -> unknown
-            end,
-            
-            %% Get ALL the stats from the zone update
-            Couriers = maps:get(<<"couriers">>, Data, maps:get(couriers, Data, 0)),
-            Deliveries = maps:get(<<"deliveries">>, Data, maps:get(deliveries, Data, 0)),
-            ActiveDeliveries = maps:get(<<"active_deliveries">>, Data, maps:get(active_deliveries, Data, 0)),
-            WaitingPackages = maps:get(<<"waiting_packages">>, Data, maps:get(waiting_packages, Data, 0)),
-            TotalOrders = maps:get(<<"total_orders">>, Data, maps:get(total_orders, Data, 0)),
-            
-            %% Update zone display
-            case Zone of
-                undefined -> {noreply, State};
+            case Index of
+                -1 -> {noreply, State};
                 _ ->
-                    Index = case Zone of
-                        north -> 0;
-                        <<"north">> -> 0;
-                        center -> 1;
-                        <<"center">> -> 1;
-                        south -> 2;
-                        <<"south">> -> 2;
-                        _ -> -1
+                    %% Get zone status
+                    Status = case maps:get(<<"status">>, Data, maps:get(status, Data, offline)) of
+                        <<"live">> -> "Connected";
+                        <<"offline">> -> "Offline";
+                        live -> "Connected";
+                        offline -> "Offline";
+                        _ -> "Unknown"
                     end,
                     
-                    case Index of
-                        -1 -> {noreply, State};
-                        _ ->
-                            ZoneName = case Index of
-                                0 -> "North Zone";
-                                1 -> "Center Zone";
-                                2 -> "South Zone"
-                            end,
-                            
-                            StatusText = case Status of
-                                live -> "Connected";
-                                down -> "Disconnected";
-                                offline -> "Offline";
-                                _ -> "Unknown"
-                            end,
-                            
-                            %% Update zone list display
-                            wxListCtrl:setItem(List, Index, 0, ZoneName),
-                            wxListCtrl:setItem(List, Index, 1, StatusText),
-                            wxListCtrl:setItem(List, Index, 2, integer_to_list(Couriers)),
-                            wxListCtrl:setItem(List, Index, 3, integer_to_list(Deliveries)),
-                            
-                            Color = case Status of
-                                live -> {0, 150, 0};
-                                down -> {200, 0, 0};
-                                offline -> {128, 128, 128};
-                                _ -> {128, 128, 128}
-                            end,
-                            wxListCtrl:setItemTextColour(List, Index, Color),
-                            
-                            %% Update zone status map with ALL data
-                            NewZoneStatusMap = maps:put(Zone, {Status, Couriers, Deliveries, ActiveDeliveries}, ZoneStatusMap),
-                            
-                            %% Calculate TOTALS from all zones
-                            {TotalZones, TotalCouriers, TotalActive, TotalDeliveries, TotalFailed} = 
-                                maps:fold(fun(_ZoneKey, {ZStatus, ZCouriers, ZDeliveries, ZActive}, 
-                                             {AccZones, AccCouriers, AccActive, AccDeliveries, AccFailed}) ->
-                                    case ZStatus of
-                                        live -> 
-                                            {AccZones + 1, AccCouriers + ZCouriers, AccActive + ZActive, 
-                                             AccDeliveries + ZDeliveries, AccFailed};
-                                        _ -> 
-                                            {AccZones, AccCouriers, AccActive, AccDeliveries, AccFailed}
-                                    end
-                                end, {0, 0, 0, 0, 0}, NewZoneStatusMap),
-                            
-                            %% UPDATE THE STATS LABELS!
-                            update_label(StatsLabels, zones_label, integer_to_list(TotalZones)),
-                            update_label(StatsLabels, couriers_label, integer_to_list(TotalCouriers)),
-                            update_label(StatsLabels, active_label, integer_to_list(TotalActive)),
-                            update_label(StatsLabels, deliveries_label, integer_to_list(TotalDeliveries)),
-                            update_label(StatsLabels, failed_label, integer_to_list(TotalFailed)),
-                            
-                            {noreply, State#state{
-                                zone_status = NewZoneStatusMap,
-                                total_zones = TotalZones,
-                                total_couriers = TotalCouriers,
-                                active_couriers = TotalActive,
-                                total_deliveries = TotalDeliveries,
-                                failed_deliveries = TotalFailed
-                            }}
-                    end
-            end;
-            
-        <<"stats_update">> ->
-            %% Direct stats update from control center
-            TotalZones = maps:get(total_zones, Data, State#state.total_zones),
-            TotalCouriers = maps:get(total_couriers, Data, State#state.total_couriers),
-            ActiveCouriers = maps:get(active_couriers, Data, State#state.active_couriers),
-            TotalDeliveries = maps:get(total_deliveries, Data, State#state.total_deliveries),
-            FailedDeliveries = maps:get(failed_deliveries, Data, State#state.failed_deliveries),
-            
-            %% Update labels directly
-            update_label(StatsLabels, zones_label, integer_to_list(TotalZones)),
-            update_label(StatsLabels, couriers_label, integer_to_list(TotalCouriers)),
-            update_label(StatsLabels, active_label, integer_to_list(ActiveCouriers)),
-            update_label(StatsLabels, deliveries_label, integer_to_list(TotalDeliveries)),
-            update_label(StatsLabels, failed_label, integer_to_list(FailedDeliveries)),
-            
-            {noreply, State#state{
-                total_zones = TotalZones,
-                total_couriers = TotalCouriers,
-                active_couriers = ActiveCouriers,
-                total_deliveries = TotalDeliveries,
-                failed_deliveries = FailedDeliveries
-            }};
-            
-        _ ->
-            {noreply, State}
+                    
+                    %% Update the list
+                    ZoneName = case Index of
+                        0 -> "North Zone";
+                        1 -> "Center Zone";
+                        2 -> "South Zone"
+                    end,
+                    
+                    wxListCtrl:setItem(List, Index, 0, ZoneName),
+                    wxListCtrl:setItem(List, Index, 1, Status),
+                    
+                    %% Set color based on status
+                    Color = case Status of
+                        "Connected" -> {0, 150, 0};   % Green
+                        "Offline" -> {128, 128, 128}; % Gray
+                        _ -> {200, 0, 0}              % Red
+                    end,
+                    wxListCtrl:setItemTextColour(List, Index, Color),
+                    
+                    {noreply, State}
+            end
     end;
 
 handle_info(retry_subscribe, State) ->
@@ -615,10 +534,16 @@ code_change(_OldVsn, State, _Extra) ->
 %%===================================================================
 %% Internal functions
 %%===================================================================
-update_label(Labels, Tag, Value) ->
-    case lists:keyfind(Tag, 1, Labels) of
-        {_, Label} -> wxStaticText:setLabel(Label, Value);
-        false -> ok
+
+%% Helper function to get courier count from input
+get_courier_count(Input) ->
+    case wxTextCtrl:getValue(Input) of
+        "" -> 5;  % Default value
+        Val -> 
+            case string:to_integer(Val) of
+                {Num, _} when Num > 0, Num =< 20 -> Num;
+                _ -> 5  % Default if invalid
+            end
     end.
 
 %% Helper functions for map management

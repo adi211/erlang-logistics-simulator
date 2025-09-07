@@ -209,15 +209,88 @@ handle_call(_Request, _From, State) ->
 %% @doc Handling cast messages
 %%--------------------------------------------------------------------
 
+
+%% Handle start with courier configuration - הוסף את זה!
+handle_cast({start_simulation_with_config, Config}, State) ->
+    case State#state.simulation_state of
+        stopped ->
+            io:format("Control Center: Starting with courier config: ~p~n", 
+                     [maps:get(courier_config, Config, #{})]),
+            
+            MapModule = maps:get(map_module, Config, map_data_100),
+            
+            %% Add visualization node and mode to config
+            FullConfig = Config#{
+                visualization_node => State#state.visualization_node,
+                simulation_mode => State#state.simulation_mode
+            },
+            
+            %% Use the existing start_fresh_simulation logic
+            %% Make sure we have zones
+            ZonesToUse = case State#state.zones of
+                [] -> 
+                    io:format("Control Center: No zones connected, trying to find...~n"),
+                    find_connected_zones();
+                Zones -> 
+                    Zones
+            end,
+            
+            io:format("Control Center: Broadcasting start_fresh_simulation to ~p zones~n", 
+                     [length(ZonesToUse)]),
+            
+            timer:sleep(1000),
+            
+            %% Send to zones with the config that includes courier counts
+            broadcast_to_zones_with_config(ZonesToUse, {start_fresh_simulation, FullConfig}),
+            
+            %% Start visualization
+            case State#state.visualization_node of
+                undefined -> ok;
+                VizNode ->
+                    case net_adm:ping(VizNode) of
+                        pong ->
+                            gen_server:cast({visualization_server, VizNode}, {start_visualization}),
+                            gen_server:cast({visualization_server, VizNode}, {load_map, MapModule});
+                        pang ->
+                            io:format("Control Center: Visualization node not reachable~n")
+                    end
+            end,
+            
+            {noreply, State#state{
+                simulation_state = running,
+                current_map = MapModule,
+                simulation_config = FullConfig,
+                zones = ZonesToUse
+            }};
+            
+        paused ->
+            io:format("Control Center: Cannot start new simulation when paused. Use resume.~n"),
+            {noreply, State};
+            
+        running ->
+            io:format("Control Center: Simulation already running~n"),
+            {noreply, State}
+    end;
+
+
+
 %% Start simulation - only from stopped state
 handle_cast({start_simulation, MapModule}, State) when is_atom(MapModule) ->
     case State#state.simulation_state of
         stopped ->
-            %% Fresh start - create everything new
-            io:format("Control Center: Starting NEW simulation with map ~p~n", [MapModule]),
-            start_fresh_simulation(MapModule, State);
+            %% Use default courier configuration
+            DefaultConfig = #{
+                courier_config => #{
+                    north => 5,
+                    center => 5,
+                    south => 5
+                },
+                map_module => MapModule,
+                num_households_per_zone => 10
+            },
+            io:format("Control Center: Starting with default courier config (5 per zone)~n"),
+            start_fresh_simulation(MapModule, State, DefaultConfig);
         paused ->
-            %% Should resume instead
             io:format("Control Center: Cannot start new simulation when paused. Use resume instead.~n"),
             {noreply, State};
         running ->
@@ -565,7 +638,7 @@ code_change(_OldVsn, State, _Extra) ->
 %%===================================================================
 
 %% Start fresh simulation
-start_fresh_simulation(MapModule, State) ->
+start_fresh_simulation(MapModule, State, Config) ->
     %% Make sure we have zones
     ZonesToUse = case State#state.zones of
         [] -> 
@@ -635,8 +708,7 @@ broadcast_to_zones_with_config([{_PID, Node, Type}|Rest], Message) ->
     
     case net_adm:ping(Node) of
         pong ->
-            gen_statem:cast({zone_manager, Node}, Message),
-            timer:sleep(100); % Give it time to process
+            gen_statem:cast({zone_manager, Node}, Message);
         pang ->
             io:format("Control Center: Zone ~p at ~p is not responding!~n", [Type, Node])
     end,
@@ -655,6 +727,8 @@ broadcast_to_zones([], Message) ->
             io:format("Control Center: Found ~p zones, broadcasting...~n", [length(EmergencyZones)]),
             broadcast_to_zones_internal(EmergencyZones, Message)
     end;
+	
+	
 broadcast_to_zones(Zones, Message) ->
     broadcast_to_zones_internal(Zones, Message).
 

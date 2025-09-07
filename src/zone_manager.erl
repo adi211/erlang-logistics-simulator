@@ -35,8 +35,7 @@
     location_tracker_pid = undefined,
     components_created = false,
     simulation_state = stopped,  % stopped | running | paused
-    package_order_counts = #{},
-    couriers_to_remove = 0  % NEW: Number of couriers to remove when they return
+    package_order_counts = #{}
 }).
 
 %% Define zone configurations
@@ -119,8 +118,7 @@ init([ControlNode]) ->
         location_tracker_pid = undefined,
         components_created = false,
         simulation_state = stopped,
-        package_order_counts = #{},
-        couriers_to_remove = 0
+        package_order_counts = #{}
     },
     
     %% Report initial zone state
@@ -177,16 +175,33 @@ handle_event(cast, {start_fresh_simulation, Config}, _StateName, Data) ->
             undefined
     end,
     
-    %% Create new couriers
-    NumCouriers = maps:get(num_couriers_per_zone, Config, 5),
+    %% Get courier count for THIS specific zone from config
+    CourierConfig = maps:get(courier_config, Config, #{}),
+    ZoneAtom = list_to_atom(Data#state.zone),  % Convert "north"/"center"/"south" to atom
+    NumCouriers = maps:get(ZoneAtom, CourierConfig, 5), % Get zone-specific count, default 5
+    
+    io:format("Zone Manager ~p (~p): Creating ~p couriers (from user config)~n", 
+              [Data#state.zone_id, ZoneAtom, NumCouriers]),
+    
+    %% Create couriers with the zone-specific count
     NewCouriers = create_fresh_couriers(Data#state.zone, NumCouriers, self(), LocationTrackerPid),
     
     %% Create new households
+    NumHouseholds = maps:get(num_households_per_zone, Config, 10),
     NewHouseholds = create_fresh_households(Data#state.zone, self()),
     
     InitialCounts = lists:foldl(fun({Id, _Pid}, Acc) ->
         maps:put(Id, 0, Acc)
     end, #{}, NewHouseholds),
+    
+    %% Report initial state with correct courier count
+    report_zone_state(Data#state.zone, Data#state{
+        available_couriers = NewCouriers,
+        busy_couriers = [],
+        total_deliveries = 0,
+        active_deliveries = 0,
+        waiting_packages = []
+    }),
     
     {next_state, monitoring, Data#state{
         simulation_state = running,
@@ -197,8 +212,8 @@ handle_event(cast, {start_fresh_simulation, Config}, _StateName, Data) ->
         location_tracker_pid = LocationTrackerPid,
         package_order_counts = InitialCounts,
         waiting_packages = [],
-        active_deliveries = 0,
-        couriers_to_remove = 0  % Reset counter
+        active_deliveries = 0
+        
     }};
 
 %% OLD handler for backward compatibility - redirects to fresh start
@@ -287,53 +302,43 @@ handle_event(cast, {pause_simulation}, _StateName, Data) ->
 
 %% Stop simulation - complete cleanup
 handle_event(cast, {stop_simulation}, StateName, Data) ->
-    io:format("Zone Manager ~p: EXECUTING STOP - Stopping simulation completely (state: ~p)~n", 
+    io:format("Zone Manager ~p: EXECUTING CONCURRENT STOP - Stopping simulation completely (state: ~p)~n", 
               [Data#state.zone_id, StateName]),
-    
-    %% Force stop all households
-    io:format("Zone Manager ~p: Stopping ~p households~n", 
-              [Data#state.zone_id, length(Data#state.household_pids)]),
-    lists:foreach(fun({Id, Pid}) ->
-        try
-            gen_server:stop(Pid, normal, 1000)
-        catch
-            _:_ -> 
-                %% Force kill if normal stop fails
-                exit(Pid, kill)
-        end
-    end, Data#state.household_pids),
-    
-    %% Force stop all couriers
+
+    %% Concurrently stop all households
+    Households = Data#state.household_pids,
+    io:format("Zone Manager ~p: Concurrently stopping ~p households...~n", [Data#state.zone_id, length(Households)]),
+    lists:foreach(fun({_Id, Pid}) ->
+        spawn(fun() -> 
+            try gen_server:cast(Pid, stop_simulation) 
+            catch _:_ -> ok end 
+        end)
+    end, Households),
+
+    %% Concurrently stop all couriers
     AllCouriers = Data#state.available_couriers ++ Data#state.busy_couriers,
-    io:format("Zone Manager ~p: Stopping ~p couriers~n", 
-              [Data#state.zone_id, length(AllCouriers)]),
-    lists:foreach(fun({Id, Pid}) ->
-        try
-            gen_statem:stop(Pid, normal, 1000)
-        catch
-            _:_ -> 
-                %% Force kill if normal stop fails
-                exit(Pid, kill)
-        end
+    io:format("Zone Manager ~p: Concurrently stopping ~p couriers...~n", [Data#state.zone_id, length(AllCouriers)]),
+    lists:foreach(fun({_Id, Pid}) ->
+        spawn(fun() -> 
+            try gen_statem:stop(Pid, normal) 
+            catch _:_ -> ok end
+        end)
     end, AllCouriers),
-    
-    %% Force stop location tracker
+
+    %% Stop location tracker (this can remain synchronous as it's just one)
     case Data#state.location_tracker_pid of
         undefined -> ok;
         TrackerPid -> 
             io:format("Zone Manager ~p: Stopping location tracker~n", [Data#state.zone_id]),
-            try
-                gen_server:stop(TrackerPid, normal, 1000)
-            catch
-                _:_ -> exit(TrackerPid, kill)
-            end
+            gen_server:stop(TrackerPid, normal, 500)
     end,
     
-    %% Clear all waiting packages
+    %% Give processes a moment to terminate before cleaning up the state
+    timer:sleep(200),
+
     io:format("Zone Manager ~p: Clearing ~p waiting packages~n", 
               [Data#state.zone_id, length(Data#state.waiting_packages)]),
     
-    %% Report final state
     report_zone_state(Data#state.zone, Data#state{
         simulation_state = stopped,
         available_couriers = [],
@@ -342,7 +347,6 @@ handle_event(cast, {stop_simulation}, StateName, Data) ->
         active_deliveries = 0
     }),
     
-    %% Move to monitoring state with clean slate
     {next_state, monitoring, Data#state{
         simulation_state = stopped,
         components_created = false,
@@ -352,83 +356,53 @@ handle_event(cast, {stop_simulation}, StateName, Data) ->
         household_pids = [],
         waiting_packages = [],
         package_order_counts = #{},
-        active_deliveries = 0,
-        couriers_to_remove = 0  % Reset counter
+        active_deliveries = 0
     }};
 
 %% Handle courier becoming available - with removal check
+%% Handle courier becoming available - SIMPLIFIED VERSION
 handle_event(cast, {courier_available, CourierId}, monitoring, Data) ->
-    io:format("Zone Manager ~p: Courier ~p is now available~n", [Data#state.zone_id, CourierId]),
+    io:format("Zone Manager ~p: Courier ~p is now available~n", 
+              [Data#state.zone_id, CourierId]),
     
-    %% Check if we should remove this courier
-    case Data#state.couriers_to_remove > 0 of
-        true ->
-            %% This courier should be removed
-            io:format("Zone Manager ~p: REMOVING returning courier ~p (marked for removal)~n", 
-                     [Data#state.zone_id, CourierId]),
-            
-            %% Find and remove the courier
-            case lists:keytake(CourierId, 1, Data#state.busy_couriers) of
-                {value, {CourierId, CourierPid}, RestBusy} ->
-                    %% Stop the courier process
-                    catch gen_statem:stop(CourierPid),
-                    
-                    %% Update the counter
-                    NewData = Data#state{
-                        busy_couriers = RestBusy,
-                        couriers_to_remove = Data#state.couriers_to_remove - 1
-                    },
-                    
-                    io:format("Zone Manager ~p: Successfully removed courier ~p. ~p more to remove.~n", 
-                             [Data#state.zone_id, CourierId, NewData#state.couriers_to_remove]),
-                    
-                    %% Report updated state
-                    report_zone_state(Data#state.zone, NewData),
-                    
-                    {keep_state, NewData};
-                false ->
-                    io:format("Zone Manager ~p: WARNING - Courier ~p not found in busy list~n", 
-                             [Data#state.zone_id, CourierId]),
-                    {keep_state, Data}
-            end;
-        
+    %% פשוט העבר את השליח מbusy לavailable
+    NewData = case lists:keytake(CourierId, 1, Data#state.busy_couriers) of
+        {value, CourierTuple, RestBusy} ->
+            Data#state{
+                available_couriers = [CourierTuple | Data#state.available_couriers],
+                busy_couriers = RestBusy
+            };
         false ->
-            %% Normal flow - move courier from busy to available
-            NewData = case lists:keytake(CourierId, 1, Data#state.busy_couriers) of
-                {value, CourierTuple, RestBusy} ->
-                    io:format("Zone Manager ~p: Moving courier ~p from busy to available pool~n", 
-                             [Data#state.zone_id, CourierId]),
-                    Data#state{
-                        available_couriers = [CourierTuple | Data#state.available_couriers],
-                        busy_couriers = RestBusy
-                    };
-                false ->
-                    io:format("Zone Manager ~p: WARNING - Courier ~p not found in busy list~n", 
-                             [Data#state.zone_id, CourierId]),
-                    Data
-            end,
+            io:format("Zone Manager ~p: WARNING - Courier ~p not found in busy list~n", 
+                     [Data#state.zone_id, CourierId]),
+            Data
+    end,
+    
+    %% בדוק אם יש חבילות ממתינות
+    case NewData#state.waiting_packages of
+        [PackageId | RestPackages] ->
+            io:format("Zone Manager ~p: Assigning waiting package ~p to courier ~p~n", 
+                     [Data#state.zone_id, PackageId, CourierId]),
             
-            %% Check if we have waiting packages and assign immediately
-            case NewData#state.waiting_packages of
-                [PackageId | RestPackages] ->
-                    io:format("Zone Manager ~p: Immediately assigning waiting package ~p to courier ~p~n", 
-                             [Data#state.zone_id, PackageId, CourierId]),
-                    
-                    [{CourierId, CourierPid} | RestAvailable] = NewData#state.available_couriers,
-                    
-                    gen_statem:cast(CourierPid, {assign_delivery, PackageId, Data#state.zone}),
-                    
-                    FinalData = NewData#state{
-                        waiting_packages = RestPackages,
-                        available_couriers = RestAvailable,
-                        busy_couriers = [{CourierId, CourierPid} | NewData#state.busy_couriers],
-                        active_deliveries = NewData#state.active_deliveries + 1
-                    },
-                    
-                    {keep_state, FinalData};
-                [] ->
-                    {keep_state, NewData}
-            end
+            [{CourierId, CourierPid} | RestAvailable] = NewData#state.available_couriers,
+            
+            %% שלח משימה לשליח
+            gen_statem:cast(CourierPid, {assign_delivery, PackageId, Data#state.zone}),
+            
+            AssignedData = NewData#state{
+                available_couriers = RestAvailable,
+                busy_couriers = [{CourierId, CourierPid} | NewData#state.busy_couriers],
+                waiting_packages = RestPackages,
+                active_deliveries = NewData#state.active_deliveries + 1
+            },
+            
+            report_zone_state(Data#state.zone, AssignedData),
+            {keep_state, AssignedData};
+            
+        [] ->
+            %% אין חבילות ממתינות
+            report_zone_state(Data#state.zone, NewData),
+            {keep_state, NewData}
     end;
 
 %% Handle new package from household
@@ -507,101 +481,7 @@ handle_event(cast, {update_load_factor, Value}, _StateName, Data) ->
     
     {keep_state, Data};
 
-%% Deploy additional couriers
-handle_event(cast, {deploy_couriers, Num}, _StateName, Data) ->
-    io:format("Zone Manager ~p: Deploying ~p additional couriers~n", [Data#state.zone_id, Num]),
-    
-    ZoneManagerPid = self(),
-    TrackerPid = Data#state.location_tracker_pid,
-    CurrentCourierCount = length(Data#state.available_couriers) + length(Data#state.busy_couriers),
-    
-    NewCourierPids = lists:map(fun(N) ->
-        CourierId = Data#state.zone ++ "_courier_" ++ integer_to_list(CurrentCourierCount + N),
-        case courier:start_link(CourierId, ZoneManagerPid, TrackerPid) of
-            {ok, Pid} ->
-                io:format("Zone Manager ~p: Started additional courier ~p (PID: ~p)~n", 
-                          [Data#state.zone_id, CourierId, Pid]),
-                {CourierId, Pid};
-            Error ->
-                io:format("Zone Manager ~p: Failed to start courier ~p: ~p~n", 
-                          [Data#state.zone_id, CourierId, Error]),
-                {CourierId, undefined}
-        end
-    end, lists:seq(1, Num)),
-    
-    ValidNewCouriers = [{Id, Pid} || {Id, Pid} <- NewCourierPids, Pid =/= undefined],
-    
-    UpdatedAvailableCouriers = Data#state.available_couriers ++ ValidNewCouriers,
-    
-    ets:update_counter(zone_stats, couriers_active, length(ValidNewCouriers)),
-    
-    report_zone_state(Data#state.zone, Data#state{available_couriers = UpdatedAvailableCouriers}),
-    
-    {keep_state, Data#state{available_couriers = UpdatedAvailableCouriers}};
 
-%% Remove couriers - FIXED with marking for removal
-handle_event(cast, {remove_couriers, Num}, _StateName, Data) ->
-    io:format("Zone Manager ~p: Request to remove ~p couriers~n", [Data#state.zone_id, Num]),
-    
-    %% Try to remove from available couriers first
-    AvailableCount = length(Data#state.available_couriers),
-    
-    if
-        AvailableCount >= Num ->
-            %% We have enough available couriers to remove
-            {ToRemove, ToKeep} = lists:split(Num, Data#state.available_couriers),
-            
-            lists:foreach(fun({CourierId, Pid}) ->
-                io:format("Zone Manager ~p: Removing available courier ~p~n", 
-                         [Data#state.zone_id, CourierId]),
-                catch gen_statem:stop(Pid)
-            end, ToRemove),
-            
-            NewData = Data#state{
-                available_couriers = ToKeep,
-                couriers_to_remove = 0
-            },
-            
-            report_zone_state(Data#state.zone, NewData),
-            
-            {keep_state, NewData};
-        
-        AvailableCount > 0 ->
-            %% Remove what we can from available, mark the rest for removal
-            {ToRemove, ToKeep} = lists:split(AvailableCount, Data#state.available_couriers),
-            RemainingToRemove = Num - AvailableCount,
-            
-            lists:foreach(fun({CourierId, Pid}) ->
-                io:format("Zone Manager ~p: Removing available courier ~p~n", 
-                         [Data#state.zone_id, CourierId]),
-                catch gen_statem:stop(Pid)
-            end, ToRemove),
-            
-            io:format("Zone Manager ~p: Marked ~p couriers for removal when they return~n", 
-                     [Data#state.zone_id, RemainingToRemove]),
-            
-            NewData = Data#state{
-                available_couriers = ToKeep,
-                couriers_to_remove = RemainingToRemove
-            },
-            
-            report_zone_state(Data#state.zone, NewData),
-            
-            {keep_state, NewData};
-        
-        true ->
-            %% No available couriers, mark all for removal when they return
-            io:format("Zone Manager ~p: No available couriers. Marked ~p for removal when they return~n", 
-                     [Data#state.zone_id, Num]),
-            
-            NewData = Data#state{
-                couriers_to_remove = Data#state.couriers_to_remove + Num
-            },
-            
-            report_zone_state(Data#state.zone, NewData),
-            
-            {keep_state, NewData}
-    end;
 
 %% Get statistics
 handle_event({call, From}, get_stats, _StateName, Data) ->
@@ -616,8 +496,7 @@ handle_event({call, From}, get_stats, _StateName, Data) ->
         available_couriers => length(Data#state.available_couriers),
         busy_couriers => length(Data#state.busy_couriers),
         total_couriers => length(Data#state.available_couriers) + length(Data#state.busy_couriers),
-        household_count => length(Data#state.household_pids),
-        couriers_to_remove => Data#state.couriers_to_remove
+        household_count => length(Data#state.household_pids)
     },
     {keep_state, Data, [{reply, From, Stats}]};
 
@@ -669,30 +548,33 @@ cleanup_existing_components(Data) ->
 
 %% Create fresh couriers
 create_fresh_couriers(Zone, NumCouriers, ZoneManagerPid, LocationTrackerPid) ->
-    lists:filtermap(fun(N) ->
+    Parent = self(),
+    Pids = lists:map(fun(N) ->
         CourierId = Zone ++ "_courier_" ++ integer_to_list(N),
-        
-        %% Stop existing courier if any
-        case whereis(list_to_atom("courier_" ++ CourierId)) of
-            undefined -> ok;
-            OldPid -> catch gen_statem:stop(OldPid)
-        end,
-        
-        timer:sleep(50),  %% Small delay
-        
-        case courier:start_link(CourierId, ZoneManagerPid, LocationTrackerPid) of
-            {ok, Pid} ->
-                io:format("Zone Manager: Started courier ~p~n", [CourierId]),
-                {true, {CourierId, Pid}};
-            Error ->
-                io:format("Zone Manager: Failed to start courier ~p: ~p~n", [CourierId, Error]),
-                false
-        end
-    end, lists:seq(1, NumCouriers)).
+        spawn(fun() ->
+            %% Stop existing courier if any
+            case whereis(list_to_atom("courier_" ++ CourierId)) of
+                undefined -> ok;
+                OldPid -> catch gen_statem:stop(OldPid)
+            end,
+            
+            case courier:start_link(CourierId, ZoneManagerPid, LocationTrackerPid) of
+                {ok, Pid} ->
+                    io:format("Zone Manager: Started courier ~p~n", [CourierId]),
+                    Parent ! {{courier_started, self()}, {ok, {CourierId, Pid}}};
+                Error ->
+                    io:format("Zone Manager: Failed to start courier ~p: ~p~n", [CourierId, Error]),
+                    Parent ! {{courier_started, self()}, {error, CourierId}}
+            end
+        end)
+    end, lists:seq(1, NumCouriers)),
+    
+    %% Collect results
+    collect_results(Pids, []).
 
 %% Create fresh households
 create_fresh_households(Zone, ZoneManagerPid) ->
-    %% Get houses in zone from map
+    %% החלק הזה של מציאת הבתים במפה נשאר זהה
     HousesInZone = case map_server:get_all_locations() of
         {ok, Locs} ->
             ZoneAtom = list_to_atom(Zone),
@@ -720,27 +602,45 @@ create_fresh_households(Zone, ZoneManagerPid) ->
         Houses ->
             Houses
     end,
-    
-    lists:filtermap(fun(House) ->
+
+    %% כאן מתחיל השינוי המרכזי: יצירה מקבילית
+    Parent = self(),
+    Pids = lists:map(fun(House) ->
         HouseholdId = House#location.id,
-        
-        %% Stop existing household if any
-        case whereis(list_to_atom("household_" ++ HouseholdId)) of
-            undefined -> ok;
-            OldPid -> catch gen_server:stop(OldPid)
-        end,
-        
-        timer:sleep(50),  %% Small delay
-        
-        case household:start_link(HouseholdId, Zone, ZoneManagerPid) of
-            {ok, Pid} ->
-                io:format("Zone Manager: Started household ~p~n", [HouseholdId]),
-                {true, {HouseholdId, Pid}};
-            Error ->
-                io:format("Zone Manager: Failed to start household ~p: ~p~n", [HouseholdId, Error]),
-                false
-        end
-    end, FinalHouses).
+        spawn(fun() ->
+            %% הפסק תהליך ישן אם קיים
+            case whereis(list_to_atom("household_" ++ HouseholdId)) of
+                undefined -> ok;
+                OldPid -> catch gen_server:stop(OldPid)
+            end,
+            
+            %% התחל את התהליך החדש
+            case household:start_link(HouseholdId, Zone, ZoneManagerPid) of
+                {ok, Pid} ->
+                    Parent ! {{household_started, self()}, {ok, {HouseholdId, Pid}}};
+                Error ->
+                    Parent ! {{household_started, self()}, {error, HouseholdId}}
+            end
+        end)
+    end, FinalHouses),
+
+    %% איסוף התוצאות מהתהליכים שנוצרו
+    collect_household_results(Pids, []).
+
+
+%% פונקציית עזר לאיסוף תוצאות מהתהליכים המקביליים
+collect_household_results([], Acc) -> 
+    lists:reverse(Acc);
+collect_household_results([Pid | Rest], Acc) ->
+    receive
+        {{household_started, Pid}, {ok, Result}} ->
+            collect_household_results(Rest, [Result | Acc]);
+        {{household_started, Pid}, {error, _}} ->
+            collect_household_results(Rest, Acc)
+    after 5000 ->
+        io:format("Zone Manager: WARNING - Timeout collecting household start results~n"),
+        lists:reverse(Acc)
+    end.
 
 %% Helper functions from original implementation
 handle_new_household_package_fixed(HouseholdId, PackageId, Data) ->
@@ -813,13 +713,33 @@ report_zone_state(Zone, Data) when is_record(Data, state) ->
                 active_deliveries => Data#state.active_deliveries,
                 total_delivered => Data#state.total_deliveries,
                 failed_deliveries => Data#state.failed_deliveries,
-                total_orders => Data#state.total_orders,
-                couriers_to_remove => Data#state.couriers_to_remove
+                total_orders => Data#state.total_orders
             },
             io:format("Zone Manager ~p: Reporting state to collector: ~p~n", 
                       [Data#state.zone_id, maps:get(couriers, StateData, 0)]),
             logistics_state_collector:zone_state_changed(Zone, StateData)
     end.
+	
+	
+	
+	
+%% Helper to collect results from spawned processes (Generic Version)
+collect_results([], Acc) ->
+    lists:reverse(Acc);
+collect_results([Pid | Rest], Acc) ->
+    receive
+        {{courier_started, Pid}, {ok, Result}} ->
+            collect_results(Rest, [Result | Acc]);
+        {{household_started, Pid}, {ok, Result}} ->
+            collect_results(Rest, [Result | Acc]);
+        {{_, Pid}, {error, _}} ->
+            collect_results(Rest, Acc)
+    after 5000 ->
+        io:format("Zone Manager: WARNING - Timeout collecting process start results~n"),
+        lists:reverse(Acc)
+    end.
+	
+	
 
 min(A, B) when A < B -> A;
 min(_, B) -> B.

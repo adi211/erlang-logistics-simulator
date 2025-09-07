@@ -114,7 +114,7 @@ handle_event(cast, {update_status, failed}, _AnyState, Data) ->
 %%--------------------------------------------------------------------
 %% Catch-all handlers
 %%--------------------------------------------------------------------
-handle_event(cast, {update_status, Status}, CurrentState, Data) ->
+handle_event(cast, {update_status, _Status}, _CurrentState, Data) ->
     %% התעלם מעדכוני סטטוס לא צפויים
     {keep_state, Data};
 
@@ -125,7 +125,7 @@ handle_event(_EventType, _Event, delivered, Data) ->
 handle_event({call, From}, get_state, StateName, Data) ->
     {keep_state, Data, [{reply, From, StateName}]};
 	
-handle_event(info, {retry_report, PackageId, NewStatus, AdditionalData}, State, Data) ->
+handle_event(info, {retry_report, PackageId, NewStatus, AdditionalData}, _State, Data) ->
     report_state_change(PackageId, NewStatus, AdditionalData),
     {keep_state, Data};
 

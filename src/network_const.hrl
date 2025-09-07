@@ -5,20 +5,20 @@
 %% ====================================================================
 %%  Local IP
 %% ====================================================================
- %%-define(VIZ_IP,    "127.0.0.1").
- %%-define(CTRL_IP,   "127.0.0.1").
- %%-define(NORTH_IP,  "127.0.0.1").
- %%-define(CENTER_IP, "127.0.0.1").
- %%-define(SOUTH_IP,  "127.0.0.1").
+-define(VIZ_IP,    "127.0.0.1").
+-define(CTRL_IP,   "127.0.0.1").
+-define(NORTH_IP,  "127.0.0.1").
+-define(CENTER_IP, "127.0.0.1").
+-define(SOUTH_IP,  "127.0.0.1").
 
 %% ====================================================================
 %% Real network IP
 %% ====================================================================
--define(VIZ_IP,    "192.168.1.100").   % Computer 1
--define(CTRL_IP,   "192.168.1.101").   % Computer 2
--define(NORTH_IP,  "192.168.1.102").   % Computer 3
--define(CENTER_IP, "192.168.1.103").   % Computer 4
--define(SOUTH_IP,  "192.168.1.104").   % Computer 5
+ %%-define(VIZ_IP,    "192.168.1.100").   % Computer 1
+ %%-define(CTRL_IP,   "192.168.1.101").   % Computer 2
+ %%-define(NORTH_IP,  "192.168.1.102").   % Computer 3
+ %%-define(CENTER_IP, "192.168.1.103").   % Computer 4
+ %%-define(SOUTH_IP,  "192.168.1.104").   % Computer 5
 
 %% ====================================================================
 %% DO NOT EDIT BELOW

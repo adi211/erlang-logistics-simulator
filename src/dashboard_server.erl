@@ -33,8 +33,8 @@
     % Zone tracking
     zone_status = #{},  % Track zone statuses
     % Node tracking
-    control_node = ?CTRL_NODE,  % Fixed control node name
-    visualization_node = node()  % Current node
+    control_node = node(),  % Current node (now running on control node)
+    visualization_node = ?VIZ_NODE  % Remote visualization node
 }).
 
 %%--------------------------------------------------------------------

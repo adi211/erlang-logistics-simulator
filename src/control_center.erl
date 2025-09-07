@@ -60,33 +60,50 @@ init([]) ->
     %% Define visualization node
     VisualizationNode = ?VIZ_NODE,
     
-    %% Launch GUI components on visualization node
+    %% Start dashboard locally on control node
     try
-        case rpc:call(VisualizationNode, dashboard_server, start, []) of
-            {badrpc, RPCReason} ->
-                io:format("Control Center: Failed to start dashboard on ~p: ~p~n", 
-                         [VisualizationNode, RPCReason]);
+        case dashboard_server:start() of
             {wx_ref, _, _, _} ->
-                io:format("Control Center: Dashboard started on ~p~n", [VisualizationNode]);
+                io:format("Control Center: Dashboard started locally on control node~n");
             Other ->
                 io:format("Control Center: Unexpected dashboard start result: ~p~n", [Other])
-        end,
-
-        case rpc:call(VisualizationNode, visualization_server, start, []) of
-            {badrpc, VizRPCReason} ->
-                io:format("Control Center: Failed to start visualization server on ~p: ~p~n", 
-                         [VisualizationNode, VizRPCReason]);
-            {ok, _VizPid} ->
-                io:format("Control Center: Visualization server started on ~p~n", [VisualizationNode]);
-            {error, {already_started, _}} ->
-                io:format("Control Center: Visualization server already running on ~p~n", [VisualizationNode]);
-            VizOther ->
-                io:format("Control Center: Unexpected visualization server start result: ~p~n", [VizOther])
+        end
+    catch
+        DashType:DashReason ->
+            io:format("Control Center: Error starting dashboard locally: ~p:~p~n", [DashType, DashReason])
+    end,
+    
+    %% Launch visualization server on visualization node (if different from current node)
+    try
+        case node() of
+            VisualizationNode ->
+                %% Same node - start visualization server locally
+                case visualization_server:start() of
+                    {ok, _VizPid} ->
+                        io:format("Control Center: Visualization server started locally~n");
+                    {error, {already_started, _}} ->
+                        io:format("Control Center: Visualization server already running locally~n");
+                    VizError ->
+                        io:format("Control Center: Failed to start visualization server locally: ~p~n", [VizError])
+                end;
+            _ ->
+                %% Different node - start via RPC
+                case rpc:call(VisualizationNode, visualization_server, start, []) of
+                    {badrpc, VizRPCReason} ->
+                        io:format("Control Center: Failed to start visualization server on ~p: ~p~n", 
+                                 [VisualizationNode, VizRPCReason]);
+                    {ok, _VizPid} ->
+                        io:format("Control Center: Visualization server started on ~p~n", [VisualizationNode]);
+                    {error, {already_started, _}} ->
+                        io:format("Control Center: Visualization server already running on ~p~n", [VisualizationNode]);
+                    VizOther ->
+                        io:format("Control Center: Unexpected visualization server start result: ~p~n", [VizOther])
+                end
         end
         
     catch
         ErrType:ErrReason ->
-            io:format("Control Center: Error starting GUI components: ~p:~p~n", [ErrType, ErrReason])
+            io:format("Control Center: Error starting visualization server: ~p:~p~n", [ErrType, ErrReason])
     end,
     
     %% Initialize ETS tables

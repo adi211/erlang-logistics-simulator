@@ -155,9 +155,18 @@ init([]) ->
 	
 %% טיפול ב-subscribe
 handle_cast({subscribe, HandlerPid}, State) ->
-    io:format("State Collector: New subscriber ~p~n", [HandlerPid]),
+    io:format("State Collector: New subscriber ~p (total: ~p)~n", 
+              [HandlerPid, length(maps:get(subscribers, State)) + 1]),
+    
     Subscribers = maps:get(subscribers, State),
     erlang:monitor(process, HandlerPid),
+    
+    %% Send current state immediately to new subscriber
+    AllZones = ets:tab2list(zone_states),
+    lists:foreach(fun({_ZoneName, ZoneData}) ->
+        HandlerPid ! {state_update, <<"zone_update">>, ZoneData}
+    end, AllZones),
+    
     NewState = State#{subscribers => [HandlerPid | Subscribers]},
     {noreply, NewState};
 
@@ -248,9 +257,11 @@ handle_cast({package_update, PackageId, NewState}, State) ->
 %% טיפול בעדכון מצב אזור
 handle_cast({zone_update, Zone, NewState}, State) ->
     io:format("State Collector: Zone ~p state changed with data: ~p~n", [Zone, NewState]),
+    
+    %% Build complete zone info
     ZoneInfo = build_zone_info(Zone, NewState),
     
-    %% Store in ETS if table exists
+    %% Store in ETS
     case ets:info(zone_states) of
         undefined ->
             io:format("Warning: zone_states table not ready yet~n");
@@ -258,8 +269,12 @@ handle_cast({zone_update, Zone, NewState}, State) ->
             ets:insert(zone_states, {Zone, ZoneInfo})
     end,
     
-    %% Always broadcast the update regardless of simulation state
+    %% ALWAYS broadcast the update
     broadcast_update(<<"zone_update">>, ZoneInfo, State),
+    
+    %% Also send aggregated stats
+    aggregate_and_send_stats(State),
+    
     Counter = maps:get(update_counter, State),
     {noreply, State#{update_counter => Counter + 1}};
 
@@ -462,6 +477,57 @@ build_zone_info(Zone, State) ->
 
 broadcast_update(UpdateType, Data, State) ->
     Subscribers = maps:get(subscribers, State),
+    
+    %% Debug: log what we're sending
+    case UpdateType of
+        <<"zone_update">> ->
+            io:format("State Collector: Broadcasting zone update to ~p subscribers: ~p~n", 
+                     [length(Subscribers), Data]);
+        _ ->
+            ok
+    end,
+    
+    %% Send to each subscriber with error handling
     lists:foreach(fun(Subscriber) ->
-        Subscriber ! {state_update, UpdateType, Data}
+        try
+            Subscriber ! {state_update, UpdateType, Data}
+        catch
+            _:Error ->
+                io:format("State Collector: Failed to send to subscriber ~p: ~p~n", 
+                         [Subscriber, Error])
+        end
     end, Subscribers).
+	
+	
+	
+aggregate_and_send_stats(State) ->
+    %% Collect data from all zones
+    AllZones = ets:tab2list(zone_states),
+    
+    %% Calculate totals
+    {TotalZones, TotalCouriers, ActiveCouriers, TotalDeliveries, FailedDeliveries} = 
+        lists:foldl(fun({_ZoneName, ZoneData}, {AccZ, AccC, AccA, AccD, AccF}) ->
+            Status = maps:get(status, ZoneData, offline),
+            case Status of
+                live ->
+                    Couriers = maps:get(couriers, ZoneData, 0),
+                    Active = maps:get(active_deliveries, ZoneData, 0),
+                    Delivered = maps:get(deliveries, ZoneData, 0),
+                    Failed = maps:get(failed_deliveries, ZoneData, 0),
+                    {AccZ + 1, AccC + Couriers, AccA + Active, AccD + Delivered, AccF + Failed};
+                _ ->
+                    {AccZ, AccC, AccA, AccD, AccF}
+            end
+        end, {0, 0, 0, 0, 0}, AllZones),
+    
+    %% Send aggregated stats
+    StatsUpdate = #{
+        total_zones => TotalZones,
+        total_couriers => TotalCouriers,
+        active_couriers => ActiveCouriers,
+        total_deliveries => TotalDeliveries,
+        failed_deliveries => FailedDeliveries
+    },
+    
+    io:format("State Collector: Sending aggregated stats: ~p~n", [StatsUpdate]),
+    broadcast_update(<<"stats_update">>, StatsUpdate, State).

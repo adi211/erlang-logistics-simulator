@@ -1,13 +1,7 @@
-%% -----------------------------------------------------------
-%% מודול איסוף מצב המערכת משופר - תומך במצב סימולציה דינמי
-%% אוסף מידע מכל הרכיבים במערכת ומפיץ עדכונים ל-WebSocket handlers
-%% משמש כ-Event Bus מרכזי וכמקור אמת יחיד (Single Source of Truth) לממשק המשתמש
-%% -----------------------------------------------------------
+
 -module(logistics_state_collector).
 -behaviour(gen_server).
 
-%% Define global name macro
--define(NAME, {global, ?MODULE}).
 
 %% API
 -export([start_link/0, subscribe/1, unsubscribe/1]).
@@ -118,7 +112,7 @@ get_full_state() ->
 %% -----------------------------------------------------------
 
 init([]) ->
-    %% CRITICAL: Register globally IMMEDIATELY
+    %% Register globally IMMEDIATELY
     case global:register_name(?MODULE, self()) of
         yes ->
             io:format("Logistics State Collector: Successfully registered globally~n");
@@ -128,7 +122,7 @@ init([]) ->
     
     io:format("Logistics State Collector starting...~n"),
     
-    %% יצירת טבלאות ETS רק אם לא קיימות (הקוד המקורי)
+    %% יצירת טבלאות ETS 
     case ets:info(courier_states) of
         undefined -> ets:new(courier_states, [named_table, public, {keypos, 1}]);
         _ -> ok
@@ -234,7 +228,7 @@ handle_cast({courier_update, CourierId, NewState}, State) ->
 
 %% טיפול בעדכון מצב חבילה
 handle_cast({package_update, PackageId, NewState}, State) ->
-    %% Remove the simulation state check - always process package updates
+    
     io:format("State Collector: Package ~p state changed to ~p~n", [PackageId, NewState]),
     
     %% Build package info
@@ -361,7 +355,7 @@ clear_all_states() ->
     ets:delete_all_objects(package_states),
     ets:delete_all_objects(zone_states).
 
-%% בדיקה דינמית של שליחים (מבוססת על מה שקיים)
+
 check_dynamic_couriers(State) ->
     %% קבלת מספר השליחים מההגדרות
     Config = maps:get(simulation_config, State, #{}),
@@ -378,6 +372,7 @@ check_dynamic_couriers(State) ->
                 ok
         end
     end, lists:seq(1, NumCouriers)).
+
 
 %% בדיקה של האזורים הקבועים
 check_fixed_zones(_State) ->

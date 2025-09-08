@@ -6,13 +6,11 @@
 -behaviour(gen_statem).
 -include("network_const.hrl").
 
-
--include("header.hrl").
 -include("map_records.hrl").
 
 
 %% API
--export([start/1, new_package/2]).
+-export([start/0,start_for_zone/1, new_package/2]).
 
 %% gen_statem callbacks
 -export([callback_mode/0, init/1, handle_event/4, terminate/3, code_change/4]).
@@ -49,34 +47,57 @@
 %% API
 %%====================================================================
 
-start(ControlNode) ->
-    gen_statem:start_link({local, zone_manager}, ?MODULE, [ControlNode], []).
+start() ->
+    gen_statem:start_link({local, zone_manager}, ?MODULE, [], []).
 
 new_package(Zone, PackageId) ->
     io:format("API: Sending new_package ~p to zone ~p~n", [PackageId, Zone]),
     gen_statem:cast(zone_manager, {new_package, PackageId}).
 
 %%====================================================================
-%% gen_statem callbacks
+%% gen_statem callbacks 
 %%====================================================================
 
 callback_mode() -> handle_event_function.
 
-init([ControlNode]) ->
-    io:format("Zone Manager ~p: Starting up as FSM with control node ~p...~n", [node(), ControlNode]),
+start_for_zone(Zone) when Zone == north; Zone == center; Zone == south ->
+    gen_statem:start_link({local, zone_manager}, ?MODULE, [Zone], []).
+
+%% Modify init to accept zone parameter
+init([]) ->
+    %% Original logic for when started normally
+    init_with_zone(determine_zone_from_node());
     
-    %% Determine zone configuration based on node name
-    {ZoneName, ZoneAtom} = case atom_to_list(node()) of
-        "zone_north" ++ _ -> {zone_north, north};
-        "zone_center" ++ _ -> {zone_center, center};
-        "zone_south" ++ _ -> {zone_south, south};
-        _ -> {zone_north, north}
+init([Zone]) when is_atom(Zone) ->
+    %% When started with explicit zone parameter
+    init_with_zone(Zone).
+
+%% Helper function to determine zone from node name
+determine_zone_from_node() ->
+    case atom_to_list(node()) of
+        "zone_north" ++ _ -> north;
+        "zone_center" ++ _ -> center;
+        "zone_south" ++ _ -> south;
+        _ -> north  % default
+    end.
+
+%% Actual initialization logic
+init_with_zone(ZoneAtom) ->
+    ControlNode = ?CTRL_NODE,
+    io:format("Zone Manager ~p: Starting up as ~p zone with control node ~p...~n", 
+              [node(), ZoneAtom, ControlNode]),
+    
+    %% Determine zone configuration
+    ZoneName = case ZoneAtom of
+        north -> zone_north;
+        center -> zone_center;
+        south -> zone_south
     end,
     
     #{center := ZoneCenter, bounds := ZoneBounds} = maps:get(ZoneName, ?ZONE_CONFIG),
     
-    io:format("Zone Manager ~p: Zone center at ~p, bounds ~p~n", 
-              [node(), ZoneCenter, ZoneBounds]),
+    io:format("Zone Manager ~p: Zone ~p center at ~p, bounds ~p~n", 
+              [node(), ZoneAtom, ZoneCenter, ZoneBounds]),
     
     %% Initialize ETS for zone statistics
     case ets:info(zone_stats) of
@@ -91,12 +112,15 @@ init([ControlNode]) ->
     ets:insert(zone_stats, {update_stats, false}),
     
     %% Connect to control center
-    io:format("Zone Manager ~p: Connecting to control center at ~p~n", [node(), ControlNode]),
+    io:format("Zone Manager ~p (~p): Connecting to control center at ~p~n", 
+              [node(), ZoneAtom, ControlNode]),
     case gen_server:call({control_center, ControlNode}, {connect, node()}) of
         ok ->
-            io:format("Zone Manager ~p: Successfully connected to control center~n", [node()]);
+            io:format("Zone Manager ~p (~p): Successfully connected to control center~n", 
+                      [node(), ZoneAtom]);
         Error ->
-            io:format("Zone Manager ~p: Failed to connect to control center: ~p~n", [node(), Error])
+            io:format("Zone Manager ~p (~p): Failed to connect to control center: ~p~n", 
+                      [node(), ZoneAtom, Error])
     end,
     
     %% Create initial state record
@@ -106,7 +130,7 @@ init([ControlNode]) ->
         zone_id = node(),
         zone_center = ZoneCenter,
         zone_bounds = ZoneBounds,
-        zone = atom_to_list(ZoneAtom),
+        zone = atom_to_list(ZoneAtom),  % Convert to string
         waiting_packages = [],
         active_deliveries = 0,
         total_deliveries = 0,
@@ -187,7 +211,6 @@ handle_event(cast, {start_fresh_simulation, Config}, _StateName, Data) ->
     NewCouriers = create_fresh_couriers(Data#state.zone, NumCouriers, self(), LocationTrackerPid),
     
     %% Create new households
-    NumHouseholds = maps:get(num_households_per_zone, Config, 10),
     NewHouseholds = create_fresh_households(Data#state.zone, self()),
     
     InitialCounts = lists:foldl(fun({Id, _Pid}, Acc) ->
@@ -259,7 +282,7 @@ handle_event(cast, {resume_simulation}, _StateName, Data) ->
             %% Resume location tracker
             case Data#state.location_tracker_pid of
                 undefined -> ok;
-                TrackerPid -> location_tracker:resume()
+                _TrackerPid -> location_tracker:resume()
             end,
             
             {keep_state, Data#state{simulation_state = running}};
@@ -291,7 +314,7 @@ handle_event(cast, {pause_simulation}, _StateName, Data) ->
             %% Pause location tracker
             case Data#state.location_tracker_pid of
                 undefined -> ok;
-                TrackerPid -> location_tracker:pause()
+                _TrackerPid -> location_tracker:pause()
             end,
             
             {keep_state, Data#state{simulation_state = paused}};
@@ -455,14 +478,14 @@ handle_event(cast, {package_delivered, PackageId, CourierId}, monitoring, Data) 
     UpdatedCounts = case string:tokens(PackageId, "_") of
         [_Zone, HouseholdId | _] ->
             CurrentCount = maps:get(HouseholdId, Data#state.package_order_counts, 1),
-            maps:put(HouseholdId, max(0, CurrentCount - 1), Data#state.package_order_counts);
+            maps:put(HouseholdId, erlang:max(0, CurrentCount - 1), Data#state.package_order_counts);
         _ ->
             Data#state.package_order_counts
     end,
     
     NewData = Data#state{
         total_deliveries = Total + 1,
-        active_deliveries = max(0, ActiveDeliveries - 1),
+        active_deliveries = erlang:max(0, ActiveDeliveries - 1),
         package_order_counts = UpdatedCounts
     },
     report_zone_state(Zone, NewData),
@@ -618,7 +641,7 @@ create_fresh_households(Zone, ZoneManagerPid) ->
             case household:start_link(HouseholdId, Zone, ZoneManagerPid) of
                 {ok, Pid} ->
                     Parent ! {{household_started, self()}, {ok, {HouseholdId, Pid}}};
-                Error ->
+                _Error ->
                     Parent ! {{household_started, self()}, {error, HouseholdId}}
             end
         end)
@@ -739,10 +762,5 @@ collect_results([Pid | Rest], Acc) ->
         lists:reverse(Acc)
     end.
 	
-	
 
-min(A, B) when A < B -> A;
-min(_, B) -> B.
 
-max(A, B) when A > B -> A;
-max(_, B) -> B.

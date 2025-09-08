@@ -245,7 +245,7 @@ handle_info(refresh_animation, State) ->
         Duration = maps:get(duration, AnimData, 1000),
         
         %% Calculate animation progress
-        Progress = min(1.0, (CurrentTime - StartTime) / Duration),
+        Progress = erlang:min(1.0, (CurrentTime - StartTime) / Duration),
         
         %% Interpolate position
         {FromX, FromY} = From,
@@ -632,45 +632,27 @@ draw_courier_routes(DC) ->
     end, Routes).
 
 %%--------------------------------------------------------------------
-%% Draw complete route path following waypoints
+%% Draw route path 
 %%--------------------------------------------------------------------
-draw_full_route_path(_DC, [], _Color, _CourierId) -> ok;
-draw_full_route_path(_DC, [_], _Color, _CourierId) -> ok;
-draw_full_route_path(DC, Path, Color, _CourierId) when is_list(Path) ->
-    %% Convert all path location IDs to coordinates
-    Coords = lists:filtermap(fun(LocationId) ->
-        case get_location_coordinates_safe(LocationId) of
-            {ok, X, Y} -> {true, {X, Y}};
-            _ -> false
-        end
-    end, Path),
-    
-    %% Draw the path if we have coordinates
-    case Coords of
-        [_,_|_] ->
-            %% Set pen for route
+draw_full_route_path(DC, [StartNode | _] = Path, Color, _CourierId) ->
+    EndNode = lists:last(Path),
+
+    %% קבל קואורדינטות רק לנקודת ההתחלה והסיום
+    case {get_location_coordinates_safe(StartNode), get_location_coordinates_safe(EndNode)} of
+        {{ok, StartX, StartY}, {ok, EndX, EndY}} ->
+            
             wxDC:setPen(DC, wxPen:new(Color, [{width, 3}, {style, ?wxSOLID}])),
             
-            %% Draw lines between consecutive points
-            draw_path_segments(DC, Coords),
             
-            %% Draw dots at waypoints
-            wxDC:setBrush(DC, wxBrush:new(Color)),
-            lists:foreach(fun({X, Y}) ->
-                wxDC:drawCircle(DC, {X, Y}, 3)
-            end, Coords);
+            wxDC:drawLine(DC, {StartX, StartY}, {EndX, EndY});
         _ ->
-            ok
-    end.
+            ok 
+    end;
+draw_full_route_path(_DC, _, _, _) ->
+    
+    ok.
 
-%%--------------------------------------------------------------------
-%% Draw path segments between consecutive points
-%%--------------------------------------------------------------------
-draw_path_segments(_DC, []) -> ok;
-draw_path_segments(_DC, [_]) -> ok;
-draw_path_segments(DC, [{X1, Y1}, {X2, Y2} | Rest]) ->
-    wxDC:drawLine(DC, {X1, Y1}, {X2, Y2}),
-    draw_path_segments(DC, [{X2, Y2} | Rest]).
+
 
 %%--------------------------------------------------------------------
 %% Safe helper to get coordinates
@@ -1143,6 +1125,3 @@ update_status_bar(Frame, Text, Column) ->
             wxStatusBar:setStatusText(StatusBar, Text, [{number, Column}])
     end.
 
-%% Helper function - minimum of two numbers
-min(A, B) when A < B -> A;
-min(_, B) -> B.

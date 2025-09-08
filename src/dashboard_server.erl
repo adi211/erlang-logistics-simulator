@@ -5,7 +5,6 @@
 -behaviour(wx_object).
 
 -include_lib("wx/include/wx.hrl").
--include("header.hrl").
 -include("network_const.hrl").
 
 -export([start/0]).
@@ -95,7 +94,7 @@ init([Wx]) ->
                 [{flag, ?wxALL bor ?wxALIGN_CENTER_VERTICAL}, {border, 5}]),
     
     MapChoice = wxChoice:new(Panel, 1010, [
-        {choices, ["Small (100 homes)", "Large (200 homes)"]}, 
+        {choices, ["Small (100 homes)", "Large (200 homes)", "Extreme (1043 homes)"]}, 
         {size, {150, -1}}
     ]),
     wxChoice:setSelection(MapChoice, 0),
@@ -285,6 +284,7 @@ handle_event(#wx{id = 1010, event = #wxCommand{type = command_choice_selected}},
     MapModule = case Selection of
         0 -> map_data_100;
         1 -> map_data_200;
+		2 -> map_data_1043;
         _ -> map_data_100
     end,
     
@@ -549,8 +549,10 @@ get_courier_count(Input) ->
 %% Helper functions for map management
 get_map_label(map_data_100) -> "Small (100 homes)";
 get_map_label(map_data_200) -> "Large (200 homes)";
+get_map_label(map_data_1043) -> "Extreme (1043 homes)";
 get_map_label(_) -> "Custom".
 
 get_map_index(map_data_100) -> 0;
 get_map_index(map_data_200) -> 1;
+get_map_index(map_data_1043) -> 2;
 get_map_index(_) -> 0.

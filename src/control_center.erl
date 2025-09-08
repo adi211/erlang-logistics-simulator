@@ -1,15 +1,14 @@
 %%%-------------------------------------------------------------------
-%%% Control Center - Fixed with proper PAUSE/RESUME/STOP handling
-%%% and improved zone communication
+%%% Control Center - with PAUSE/RESUME/STOP handling
 %%%-------------------------------------------------------------------
 -module(control_center).
 -behaviour(gen_server).
 
--include("header.hrl").
+
 -include("network_const.hrl").
 
 %% API
--export([start/1]).
+-export([start/0]).
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2, terminate/2, code_change/3]).
 
 -define(SERVER, ?MODULE).
@@ -34,14 +33,14 @@
 %%--------------------------------------------------------------------
 %% @doc Starts the control center
 %%--------------------------------------------------------------------
-start(VisualizationNode) ->
-    gen_server:start_link({local, ?SERVER}, ?MODULE, [VisualizationNode], []).
+start() ->
+    gen_server:start_link({local, ?SERVER}, ?MODULE, [], []).
 
 %%--------------------------------------------------------------------
 %% @private
 %% @doc Initializes the server
 %%--------------------------------------------------------------------
-init([VisualizationNode]) ->
+init([]) ->
     io:format("Control Center: Starting up...~n"),
     
     StateCollectorPid = case logistics_state_collector:start_link() of
@@ -57,34 +56,33 @@ init([VisualizationNode]) ->
             undefined
     end,
     
+    %% Define visualization node
+    VisualizationNode = ?VIZ_NODE,
+    
     %% Launch GUI components on visualization node
     try
-        case VisualizationNode of
-            undefined -> 
-                io:format("Control Center: No visualization node specified~n");
-            _ ->
-                case rpc:call(VisualizationNode, dashboard_server, start, []) of
-                    {badrpc, RPCReason} ->
-                        io:format("Control Center: Failed to start dashboard on ~p: ~p~n", 
-                                 [VisualizationNode, RPCReason]);
-                    {wx_ref, _, _, _} ->
-                        io:format("Control Center: Dashboard started on ~p~n", [VisualizationNode]);
-                    Other ->
-                        io:format("Control Center: Unexpected dashboard start result: ~p~n", [Other])
-                end,
-                
-                case rpc:call(VisualizationNode, visualization_server, start, []) of
-                    {badrpc, VizRPCReason} ->
-                        io:format("Control Center: Failed to start visualization server on ~p: ~p~n", 
-                                 [VisualizationNode, VizRPCReason]);
-                    {ok, _VizPid} ->
-                        io:format("Control Center: Visualization server started on ~p~n", [VisualizationNode]);
-                    {error, {already_started, _}} ->
-                        io:format("Control Center: Visualization server already running on ~p~n", [VisualizationNode]);
-                    VizOther ->
-                        io:format("Control Center: Unexpected visualization server start result: ~p~n", [VizOther])
-                end
+        case rpc:call(VisualizationNode, dashboard_server, start, []) of
+            {badrpc, RPCReason} ->
+                io:format("Control Center: Failed to start dashboard on ~p: ~p~n", 
+                         [VisualizationNode, RPCReason]);
+            {wx_ref, _, _, _} ->
+                io:format("Control Center: Dashboard started on ~p~n", [VisualizationNode]);
+            Other ->
+                io:format("Control Center: Unexpected dashboard start result: ~p~n", [Other])
+        end,
+
+        case rpc:call(VisualizationNode, visualization_server, start, []) of
+            {badrpc, VizRPCReason} ->
+                io:format("Control Center: Failed to start visualization server on ~p: ~p~n", 
+                         [VisualizationNode, VizRPCReason]);
+            {ok, _VizPid} ->
+                io:format("Control Center: Visualization server started on ~p~n", [VisualizationNode]);
+            {error, {already_started, _}} ->
+                io:format("Control Center: Visualization server already running on ~p~n", [VisualizationNode]);
+            VizOther ->
+                io:format("Control Center: Unexpected visualization server start result: ~p~n", [VizOther])
         end
+        
     catch
         ErrType:ErrReason ->
             io:format("Control Center: Error starting GUI components: ~p:~p~n", [ErrType, ErrReason])

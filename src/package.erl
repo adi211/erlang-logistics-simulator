@@ -129,7 +129,7 @@ handle_event(info, {retry_report, PackageId, NewStatus, AdditionalData}, _State,
     report_state_change(PackageId, NewStatus, AdditionalData),
     {keep_state, Data};
 
-handle_event(EventType, Event, StateName, Data) ->
+handle_event(_EventType, _Event, _StateName,Data) ->
     %% Catch-all לאירועים לא מטופלים
     {keep_state, Data}.
 

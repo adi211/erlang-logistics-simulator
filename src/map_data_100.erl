@@ -24,7 +24,7 @@ get_map() ->
 
 get_homes() ->
     [
-        %% North Zone - Row 1
+        %% North Zone homes (34 homes)
         #{id => 1, x => 92, y => 61, zone => north},
         #{id => 2, x => 184, y => 61, zone => north},
         #{id => 3, x => 276, y => 61, zone => north},
@@ -37,8 +37,6 @@ get_homes() ->
         #{id => 10, x => 923, y => 61, zone => north},
         #{id => 11, x => 1015, y => 61, zone => north},
         #{id => 12, x => 1107, y => 61, zone => north},
-        
-        %% North Zone - Row 2
         #{id => 13, x => 92, y => 123, zone => north},
         #{id => 14, x => 184, y => 123, zone => north},
         #{id => 15, x => 276, y => 123, zone => north},
@@ -50,8 +48,6 @@ get_homes() ->
         #{id => 21, x => 923, y => 123, zone => north},
         #{id => 22, x => 1015, y => 123, zone => north},
         #{id => 23, x => 1107, y => 123, zone => north},
-        
-        %% North Zone - Row 3
         #{id => 24, x => 92, y => 184, zone => north},
         #{id => 25, x => 184, y => 184, zone => north},
         #{id => 26, x => 276, y => 184, zone => north},
@@ -63,8 +59,8 @@ get_homes() ->
         #{id => 32, x => 923, y => 184, zone => north},
         #{id => 33, x => 1015, y => 184, zone => north},
         #{id => 34, x => 1107, y => 184, zone => north},
-        
-        %% Center Zone - Row 1
+
+        %% Center Zone homes (33 homes)
         #{id => 35, x => 92, y => 307, zone => center},
         #{id => 36, x => 184, y => 307, zone => center},
         #{id => 37, x => 276, y => 307, zone => center},
@@ -77,8 +73,6 @@ get_homes() ->
         #{id => 44, x => 923, y => 307, zone => center},
         #{id => 45, x => 1015, y => 307, zone => center},
         #{id => 46, x => 1107, y => 307, zone => center},
-        
-        %% Center Zone - Row 2
         #{id => 47, x => 92, y => 369, zone => center},
         #{id => 48, x => 184, y => 369, zone => center},
         #{id => 49, x => 276, y => 369, zone => center},
@@ -91,19 +85,17 @@ get_homes() ->
         #{id => 56, x => 923, y => 369, zone => center},
         #{id => 57, x => 1015, y => 369, zone => center},
         #{id => 58, x => 1107, y => 369, zone => center},
-        
-        %% Center Zone - Row 3
         #{id => 59, x => 92, y => 430, zone => center},
         #{id => 60, x => 184, y => 430, zone => center},
         #{id => 61, x => 276, y => 430, zone => center},
         #{id => 62, x => 415, y => 430, zone => center},
-        #{id => 63, x => 553, y => 492, zone => center},
-        #{id => 64, x => 692, y => 430, zone => center},
-        #{id => 65, x => 923, y => 430, zone => center},
-        #{id => 66, x => 1015, y => 430, zone => center},
-        #{id => 67, x => 1107, y => 430, zone => center},
-        
-        %% South Zone - Row 1
+        #{id => 63, x => 692, y => 430, zone => center},
+        #{id => 64, x => 923, y => 430, zone => center},
+        #{id => 65, x => 1015, y => 430, zone => center},
+        #{id => 66, x => 1107, y => 430, zone => center},
+        #{id => 67, x => 553, y => 492, zone => center},
+
+        %% South Zone homes (33 homes)
         #{id => 68, x => 92, y => 553, zone => south},
         #{id => 69, x => 184, y => 553, zone => south},
         #{id => 70, x => 276, y => 553, zone => south},
@@ -116,8 +108,6 @@ get_homes() ->
         #{id => 77, x => 923, y => 553, zone => south},
         #{id => 78, x => 1015, y => 553, zone => south},
         #{id => 79, x => 1107, y => 553, zone => south},
-        
-        %% South Zone - Row 2
         #{id => 80, x => 92, y => 615, zone => south},
         #{id => 81, x => 184, y => 615, zone => south},
         #{id => 82, x => 369, y => 615, zone => south},
@@ -125,12 +115,8 @@ get_homes() ->
         #{id => 84, x => 646, y => 615, zone => south},
         #{id => 85, x => 738, y => 615, zone => south},
         #{id => 86, x => 1015, y => 615, zone => south},
-        
-        %% South Zone - Row 3
         #{id => 87, x => 276, y => 676, zone => south},
         #{id => 88, x => 830, y => 676, zone => south},
-        
-        %% South Zone - Row 4
         #{id => 89, x => 92, y => 738, zone => south},
         #{id => 90, x => 184, y => 738, zone => south},
         #{id => 91, x => 276, y => 738, zone => south},
@@ -177,7 +163,7 @@ get_roads() ->
         #{x1 => 46, y1 => 338, x2 => 1154, y2 => 338},
         #{x1 => 46, y1 => 523, x2 => 1154, y2 => 523},
         #{x1 => 46, y1 => 277, x2 => 1154, y2 => 277},
-        
+
         %% Driveways
         #{x1 => 92, y1 => 62, x2 => 92, y2 => 92},
         #{x1 => 185, y1 => 62, x2 => 185, y2 => 92},

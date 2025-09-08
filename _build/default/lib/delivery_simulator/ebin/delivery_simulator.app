@@ -7,5 +7,5 @@
               {modules,[backup_node,control_center,courier,dashboard_server,
                         delivery_simulator_app,delivery_simulator_sup,
                         household,location_tracker,logistics_state_collector,
-                        map_data_100,map_data_200,map_server,package,
-                        visualization_server,zone_manager]}]}.
+                        map_data_100,map_data_1043,map_data_200,map_server,
+                        package,visualization_server,zone_manager]}]}.

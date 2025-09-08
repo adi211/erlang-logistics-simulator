@@ -131,8 +131,7 @@ rebar3 shell --name backup@<YOUR_IP> --setcookie logistics
 Once all nodes are running:
 - The visualization window opens automatically
 - Use the dashboard to start/stop simulation
-- Add/remove couriers dynamically
-- Monitor real-time statistics
+
 
 ## Authors
 

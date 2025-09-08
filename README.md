@@ -30,18 +30,23 @@ rebar3 compile
 Running the System
 
 Option 1: Single Machine (6 terminals)
+
 Terminal 1 - Visualization:
 bashrebar3 shell --name visualization@127.0.0.1 --setcookie logistics
-> visualization_server:start().
+  visualization_server:start().
+
 Terminal 2 - Control:
 bashrebar3 shell --name control@127.0.0.1 --setcookie logistics
-> control_center:start().
+  control_center:start().
+
 Terminal 3 - Zone North:
 bashrebar3 shell --name zone_north@127.0.0.1 --setcookie logistics
-> zone_manager:start().
+  zone_manager:start().
+
 Terminal 4 - Zone Center:
 bashrebar3 shell --name zone_center@127.0.0.1 --setcookie logistics
-> zone_manager:start().
+  zone_manager:start().
+  
 Terminal 5 - Zone South:
 bashrebar3 shell --name zone_south@127.0.0.1 --setcookie logistics
 > zone_manager:start().

@@ -64,7 +64,7 @@ rebar3 shell --name backup@127.0.0.1 --setcookie logistics
 > backup_node:start().
 ```
 
-### Option 2: Multiple Machines (Example Lab Setup)
+### Option 2: Multiple Machines (Example Setup)
 
 1. Edit `include/network_const.hrl`:
 ```erlang
@@ -79,7 +79,7 @@ rebar3 shell --name backup@127.0.0.1 --setcookie logistics
 
 2. Recompile: `rebar3 clean && rebar3 compile`
 
-3. Run on each machine (example with lab IPs):
+3. Run on each machine (example IPs):
 
 **Computer 1 (132.72.52.84):**
 ```bash

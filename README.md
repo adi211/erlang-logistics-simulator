@@ -2,6 +2,15 @@
 
 > 🎥 [Watch Demo Video](https://youtu.be/wCwnGQa-tug)
 
+## Final Project - Delivery Simulator
+
+**Creators:** Adi Shlomo and Dolev Ishay  
+**Course:** Functional Programming in Concurrent and Distributed Systems, Ben Gurion University  
+**Professor:** Yehuda Ben-Shimol  
+**Teaching Assistant:** Guy Perets
+
+---
+
 Distributed logistics management system built with Erlang/OTP, simulating a 24/7 delivery company with real-time visualization and automatic failover.
 
 ## Overview

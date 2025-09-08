@@ -14,7 +14,7 @@ start() ->
     %% Initialize map server locally
     map_server:initialize_local_map(map_data_100),
     
-    %% רשימת כל הnodes לניטור
+    
     Nodes = [
         ?CTRL_NODE,
         ?NORTH_NODE,

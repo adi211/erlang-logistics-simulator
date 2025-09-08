@@ -1,59 +1,98 @@
-delivery_simulator
-=====
-Using Erlang/OTP, this project implements a distributed and fault-tolerant logistics management system, simulating a 24/7 delivery company with real-time control, live visualization, and dynamic parameter adjustment. The simulator operates across multiple maps (100, 200, 1,000 houses), each divided into three zones; each zone contains a fixed set of businesses providing deliveries to nearby houses and is supervised by a dedicated regional management process. The architecture showcases core features of distributed systems, supervision trees, process distribution, automatic failover, and scalability, while implementing optimal routing, load balancing, and resource management to evaluate system performance under varying loads and failure scenarios.
+Delivery Simulator
 
-An OTP application
+🎥 Watch Demo Video
+https://youtu.be/wCwnGQa-tug
 
-Build
------
+Distributed logistics management system built with Erlang/OTP, simulating a 24/7 delivery company with real-time visualization and automatic failover.
 
-$ rebar3 compile
+Overview
 
-
-
-Visualization node: 
-
-$ rebar3 shell --name visualization@127.0.0.1 --setcookie logistics
-
-$ visualization_server:start().
+6 distributed nodes (Visualization, Control, 3 Zones, Backup)
+Fault-tolerant with automatic failover
+Real-time visualization of deliveries
+Scalable to 1000+ concurrent operations
 
 
+Requirements
 
-control node:
-
-$ rebar3 shell --name control@127.0.0.1 --setcookie logistics
-
-$ control_center:start().
+Erlang/OTP 24+
+Rebar3
 
 
+Installation
 
-zone north node:
-
-$ rebar3 shell --name zone_north@127.0.0.1 --setcookie logistics
-
-$ zone_manager:start().
+bashgit clone https://github.com/adi211/erlang-logistics-simulator.git
+cd erlang-logistics-simulator
+rebar3 compile
 
 
 
-zone center node:
+Running the System
 
-$ rebar3 shell --name zone_center@127.0.0.1 --setcookie logistics
+Option 1: Single Machine (6 terminals)
+Terminal 1 - Visualization:
+bashrebar3 shell --name visualization@127.0.0.1 --setcookie logistics
+> visualization_server:start().
+Terminal 2 - Control:
+bashrebar3 shell --name control@127.0.0.1 --setcookie logistics
+> control_center:start().
+Terminal 3 - Zone North:
+bashrebar3 shell --name zone_north@127.0.0.1 --setcookie logistics
+> zone_manager:start().
+Terminal 4 - Zone Center:
+bashrebar3 shell --name zone_center@127.0.0.1 --setcookie logistics
+> zone_manager:start().
+Terminal 5 - Zone South:
+bashrebar3 shell --name zone_south@127.0.0.1 --setcookie logistics
+> zone_manager:start().
+Terminal 6 - Backup:
+bashrebar3 shell --name backup@127.0.0.1 --setcookie logistics
+> backup_node:start().
 
-$ zone_manager:start().
 
 
+Option 2: Multiple Machines (Example Lab Setup)
 
-zone south node:
+Edit include/network_const.hrl:
 
-$ rebar3 shell --name zone_south@127.0.0.1 --setcookie logistics
+Comment local IPs and uncomment real IPs:
+%% Example configuration:
+-define(VIZ_IP,    "132.72.52.84").   % Computer 1
+-define(CTRL_IP,   "132.72.54.72").   % Computer 2
+-define(NORTH_IP,  "132.72.81.226").  % Computer 3
+-define(CENTER_IP, "132.72.80.235").  % Computer 4
+-define(SOUTH_IP,  "132.72.81.94").   % Computer 5
 
-$ zone_manager:start().
+Recompile: rebar3 clean && rebar3 compile
+
+Run on each machine (example IPs):
+
+Computer 1 (132.72.52.84):
+bashrebar3 shell --name visualization@132.72.52.84 --setcookie logistics
+> visualization_server:start().
+Computer 2 (132.72.54.72):
+bashrebar3 shell --name control@132.72.54.72 --setcookie logistics
+> control_center:start().
+Computer 3 (132.72.81.226):
+bashrebar3 shell --name zone_north@132.72.81.226 --setcookie logistics
+> zone_manager:start().
+Computer 4 (132.72.80.235):
+bashrebar3 shell --name zone_center@132.72.80.235 --setcookie logistics
+> zone_manager:start().
+Computer 5 (132.72.81.94):
+bashrebar3 shell --name zone_south@132.72.81.94 --setcookie logistics
+> zone_manager:start().
+Computer 6 (Any available IP):
+bashrebar3 shell --name backup@<YOUR_IP> --setcookie logistics
+> backup_node:start().
 
 
+Usage
+Once all nodes are running:
 
-backup node:
+The visualization window opens automatically
+Use the dashboard to start/stop simulation
 
-$ rebar3 shell --name backup@127.0.0.1 --setcookie logistics
 
-$ backup_node:start().
-
+Authors
+Adi Shlomo & Dolev Ishay

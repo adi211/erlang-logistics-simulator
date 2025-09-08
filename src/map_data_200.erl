@@ -10,7 +10,7 @@ get_map() ->
         dimensions => #{width => 1200, height => 800},
         homes => get_homes(),
         businesses => get_businesses(),
-        roads => get_roads(),  %% Added roads
+        roads => get_roads(), 
         stats => #{
             total_homes => 200,
             total_businesses => 3,

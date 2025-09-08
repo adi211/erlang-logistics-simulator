@@ -208,7 +208,7 @@ handle_call(_Request, _From, State) ->
 %%--------------------------------------------------------------------
 
 
-%% Handle start with courier configuration - הוסף את זה!
+%% Handle start with courier configuration 
 handle_cast({start_simulation_with_config, Config}, State) ->
     case State#state.simulation_state of
         stopped ->
@@ -272,7 +272,7 @@ handle_cast({start_simulation_with_config, Config}, State) ->
 
 
 
-%% Start simulation - only from stopped state
+%% Start simulation for debagging
 handle_cast({start_simulation, MapModule}, State) when is_atom(MapModule) ->
     case State#state.simulation_state of
         stopped ->
@@ -298,6 +298,8 @@ handle_cast({start_simulation, MapModule}, State) when is_atom(MapModule) ->
 
 handle_cast({start_simulation}, State) ->
     handle_cast({start_simulation, State#state.current_map}, State);
+	
+	
 
 %% Resume handler
 handle_cast({resume_simulation}, State) ->
@@ -677,7 +679,7 @@ start_fresh_simulation(MapModule, State, Config) ->
         simulation_state = running,
         current_map = MapModule,
         simulation_config = Config,
-        zones = ZonesToUse  %% Make sure to keep the zones!
+        zones = ZonesToUse  
     }}.
 
 %% Find connected zones

@@ -1,5 +1,5 @@
 %%%-------------------------------------------------------------------
-%%% @doc Visualization Server - Updated with State Collector Integration
+%%% @doc Visualization Server with State Collector Integration
 %%%-------------------------------------------------------------------
 -module(visualization_server).
 -behaviour(gen_server).
@@ -313,10 +313,9 @@ load_map_from_file(MapModuleName) ->
     end,
     
     try
-        %% First try to compile the module if needed
+
         case code:ensure_loaded(ModuleAtom) of
             {error, _} ->
-                %% Try to compile the file
                 FileName = atom_to_list(ModuleAtom) ++ ".erl",
                 io:format("Attempting to compile ~s~n", [FileName]),
                 case compile:file(FileName, []) of
@@ -418,7 +417,7 @@ load_default_map() ->
     
     ets:insert(map_data, {homes, DefaultHomes}),
     ets:insert(map_data, {businesses, DefaultBusinesses}),
-    ets:insert(map_data, {roads, []}),  %% Empty roads list for default
+    ets:insert(map_data, {roads, []}), 
     ets:insert(map_data, {dimensions, #{width => 1200, height => 800}}),
     ets:insert(map_data, {stats, #{total_homes => 7, total_businesses => 3}}).
 

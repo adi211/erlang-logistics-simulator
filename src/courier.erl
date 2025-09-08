@@ -300,7 +300,7 @@ handle_event(EventType, Event, StateName, Data) ->
 %% Helper Functions
 %%--------------------------------------------------------------------
 
-%% Parse package locations - FIXED PARSING LOGIC
+%% Parse package locations 
 get_package_locations(PackageId, Zone) ->
     io:format("Courier: Getting locations for package ~p in zone ~p~n", [PackageId, Zone]),
     
@@ -331,7 +331,7 @@ get_package_locations(PackageId, Zone) ->
             end
     end.
 
-%% Parse home ID from package ID - NEW ROBUST PARSER
+%% Parse home ID from package ID 
 parse_home_from_package_id(PackageId) ->
     %% Split by underscore
     Parts = string:tokens(PackageId, "_"),

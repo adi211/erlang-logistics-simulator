@@ -239,7 +239,7 @@ handle_event(cast, {start_fresh_simulation, Config}, _StateName, Data) ->
         
     }};
 
-%% OLD handler for backward compatibility - redirects to fresh start
+%% handler for backward compatibility - redirects to fresh start
 handle_event(cast, {start_simulation, Config}, _StateName, Data) ->
     case Data#state.simulation_state of
         stopped ->
@@ -382,8 +382,8 @@ handle_event(cast, {stop_simulation}, StateName, Data) ->
         active_deliveries = 0
     }};
 
-%% Handle courier becoming available - with removal check
-%% Handle courier becoming available - SIMPLIFIED VERSION
+
+%% Handle courier becoming available 
 handle_event(cast, {courier_available, CourierId}, monitoring, Data) ->
     io:format("Zone Manager ~p: Courier ~p is now available~n", 
               [Data#state.zone_id, CourierId]),
@@ -597,7 +597,7 @@ create_fresh_couriers(Zone, NumCouriers, ZoneManagerPid, LocationTrackerPid) ->
 
 %% Create fresh households
 create_fresh_households(Zone, ZoneManagerPid) ->
-    %% החלק הזה של מציאת הבתים במפה נשאר זהה
+    
     HousesInZone = case map_server:get_all_locations() of
         {ok, Locs} ->
             ZoneAtom = list_to_atom(Zone),
@@ -626,7 +626,7 @@ create_fresh_households(Zone, ZoneManagerPid) ->
             Houses
     end,
 
-    %% כאן מתחיל השינוי המרכזי: יצירה מקבילית
+    
     Parent = self(),
     Pids = lists:map(fun(House) ->
         HouseholdId = House#location.id,
@@ -762,5 +762,3 @@ collect_results([Pid | Rest], Acc) ->
         lists:reverse(Acc)
     end.
 	
-
-

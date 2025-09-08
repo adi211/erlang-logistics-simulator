@@ -14,11 +14,11 @@
 %% ====================================================================
 %% Real network IP
 %% ====================================================================
- %%-define(VIZ_IP,    "192.168.1.100").   % Computer 1
- %%-define(CTRL_IP,   "192.168.1.101").   % Computer 2
- %%-define(NORTH_IP,  "192.168.1.102").   % Computer 3
- %%-define(CENTER_IP, "192.168.1.103").   % Computer 4
- %%-define(SOUTH_IP,  "192.168.1.104").   % Computer 5
+ %%-define(VIZ_IP,    "132.72.52.84").   % Computer 1
+ %%-define(CTRL_IP,   "132.72.54.72").   % Computer 2
+ %%-define(NORTH_IP,  "132.72.81.226").   % Computer 3
+ %%-define(CENTER_IP, "132.72.80.235").   % Computer 4
+ %%-define(SOUTH_IP,  "132.72.81.94").   % Computer 5
 
 %% ====================================================================
 %% DO NOT EDIT BELOW

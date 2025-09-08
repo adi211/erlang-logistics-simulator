@@ -195,7 +195,7 @@ schedule_next_order(LoadFactor) when LoadFactor == 0 ->
     undefined;
 schedule_next_order(LoadFactor) ->
     %% Calculate delay based on load factor
-    %% Load factor 0-100 maps to delay 180000-10000 ms (3 minutes to 10 seconds)
+    %% Load factor 1-100 maps to delay 180000-10000 ms (3 minutes to 10 seconds)
     BaseMaxDelay = 180000,  % 3 minutes
     BaseMinDelay = 10000,   % 10 seconds
     

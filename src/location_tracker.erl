@@ -1,7 +1,6 @@
 %% -----------------------------------------------------------
 %% מודול מעקב אחר מיקומי שליחים (Location Tracker)
 %% מנהל את התנועה של שליחים על המפה בזמן אמת
-%% -- גרסה משודרגת עם ניתוב מבוסס גרף --
 %% -----------------------------------------------------------
 -module(location_tracker).
 -behaviour(gen_server).
@@ -10,18 +9,18 @@
 -export([start_link/0]).
 -export([start_tracking/4, stop_tracking/1, get_courier_status/1]).
 -export([update_all_positions/0]).
-%% >> הערה חדשה: הוספת פונקציות API חדשות להשהיה והמשך <<
+
 -export([pause/0, resume/0]).
-%% @@ הוספת API חדש לניקוי המעקבים @@
+
 -export([clear_all_trackings/0]).
 
 %% gen_server callbacks
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2, terminate/2, code_change/3]).
 
-%% כלול את קובץ ה-header עם הגדרות ה-records
+
 -include("map_records.hrl").
 
-%% --- שינוי והוספת שדות לרשומת המעקב ---
+
 -record(tracking, {
     courier_id,          % מזהה השליח
     start_location_id,   % מזהה נקודת מוצא
@@ -37,12 +36,11 @@
     current_segment_index = 1, % אינדקס המקטע הנוכחי במסלול
     distance_on_segment = 0    % מרחק שהשליח עבר על המקטע הנוכחי
 }).
-%% --- סוף השינוי ---
+
 
 -record(state, {
     active_trackings = #{},  % מעקבים פעילים
     update_timer,            % טיימר לעדכון תקופתי
-    %% >> הערה חדשה: הוספת דגל למצב השהיה <<
     paused = false
 }).
 
@@ -58,14 +56,14 @@
 start_link() ->
     gen_server:start_link({local, ?MODULE}, ?MODULE, [], []).
 
-%% >> הערה חדשה: פונקציות API חדשות להשהיה והמשך <<
+
 pause() ->
     gen_server:cast(?MODULE, pause).
 
 resume() ->
     gen_server:cast(?MODULE, resume).
 
-%% @@ הערה בעברית: פונקציית API חדשה המאפשרת למרכז הבקרה לנקות את כל המעקבים הפעילים. @@
+
 clear_all_trackings() ->
     gen_server:cast(?MODULE, clear_all).
 
@@ -205,7 +203,7 @@ handle_cast(update_all_positions, State) ->
 handle_cast(_Msg, State) ->
     {noreply, State}.
 
-%% >> הערה חדשה: שינוי לוגיקת עדכון המיקומים כדי שתתחשב במצב ההשהיה <<
+
 handle_info(update_positions, State) ->
     %% בדיקה אם המערכת מושהית
     NewState = case State#state.paused of
@@ -237,11 +235,7 @@ terminate(_Reason, State) ->
 code_change(_OldVsn, State, _Extra) ->
     {ok, State}.
 
-%% -----------------------------------------------------------
-%% פונקציות עזר פרטיות (חלקן חדשות או שונו)
-%% -----------------------------------------------------------
 
-%% --- לוגיקת התנועה החדשה ---
 
 %% @doc פונקציית העל שמעדכנת את המיקום של כל השליחים הפעילים.
 update_all_courier_positions(State) ->
@@ -284,7 +278,7 @@ move_courier(Tracking, DistanceToMove) ->
             %% השליח יסיים את המקטע הנוכחי בפעימה זו.
             LeftoverDistance = DistanceToMove - RemainingOnSegment,
             
-            %% תיקון: במקום להתחיל מ-0, נתחיל עם המרחק שכבר עברנו
+
             NewTracking = Tracking#tracking{
                 current_segment_index = SegmentIndex + 1,
                 distance_on_segment = 0,  % נתחיל מ-0 זמנית
@@ -318,12 +312,12 @@ move_courier(Tracking, DistanceToMove) ->
         end
     end.
 
-%% תיקון גם בפונקציית update_courier_position
+
 update_courier_position(Tracking) ->
     SegmentIndex = Tracking#tracking.current_segment_index,
     Route = Tracking#tracking.route,
 
-    %% בדיקת תקינות משופרת
+
     if SegmentIndex > length(Route) - 1 ->
         %% אם חרגנו מהמסלול, נישאר בנקודה האחרונה
         LastLocationId = lists:last(Route),
@@ -431,7 +425,7 @@ handle_arrival(Tracking) ->
     %% מחזירים את רשומת המעקב עם סטטוס "הגיע".
     Tracking#tracking{status = arrived}.
 
-%% --- פונקציות עזר קיימות וחדשות ---
+
 
 %% חישוב מהירות עם וריאציה רנדומלית
 calculate_speed() ->

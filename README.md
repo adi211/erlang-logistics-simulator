@@ -75,7 +75,7 @@ rebar3 shell --name backup@127.0.0.1 --setcookie logistics
 
 ### Option 2: Multiple Machines (Example Setup)
 
-1. Edit `include/network_const.hrl`:
+1. Edit `src/network_const.hrl`:
 ```erlang
 %% Comment local IPs and uncomment real IPs:
 %% Example configuration:
